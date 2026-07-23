@@ -1,0 +1,12 @@
+CREATE TABLE people (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE
+) strict;
+
+CREATE TABLE bookings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  start_date VARCHAR(8) NOT NULL,
+  end_date VARCHAR(8) NOT NULL,
+  creator_id INTEGER NOT NULL REFERENCES people(id),
+  guest_count INTEGER NOT NULL
+);
