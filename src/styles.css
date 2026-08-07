@@ -59,4 +59,7 @@
     .booking-end {
         @apply bg-blue-500 hover:bg-blue-500 rounded-none rounded-r-full;
     }
+
+    /* https://alpinejs.dev/directives/cloak */
+    [x-cloak] { display: none !important; }
 }

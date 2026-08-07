@@ -24,7 +24,7 @@ type SharedRepository = Arc<dyn Repository>;
 const HX_TRIGGER: &str = "hx-trigger";
 
 /// Client-side event fired once a booking has been persisted, see
-/// `src/day-popover.ts`.
+/// `src/index.ts`.
 const BOOKING_SAVED_EVENT: &str = "booking-saved";
 
 #[derive(RustEmbed)]

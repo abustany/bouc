@@ -3,15 +3,15 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=assets/styles.css");
-    println!("cargo:rerun-if-changed=assets/day-popover.js");
+    println!("cargo:rerun-if-changed=assets/index.js");
 
     let release = std::env::var("PROFILE").as_deref() == Ok("release");
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR is not set");
-    let js_build_path = format!("{out_dir}/day-popover.js");
+    let js_build_path = format!("{out_dir}/index.js");
 
     let mut tailwind_args = vec!["--input", "src/styles.css", "--output", "assets/styles.css"];
     let mut rolldown_args = vec![
-        "src/day-popover.ts",
+        "src/index.ts",
         "--file",
         js_build_path.as_str(),
         "--format",
@@ -29,8 +29,8 @@ fn main() {
     run("rolldown", &rolldown_args);
 
     // rolldown rewrites its output on every run, which would make cargo see
-    // assets/day-popover.js as dirty and rerun this script every build
-    copy_if_changed(&js_build_path, "assets/day-popover.js");
+    // assets/index.js as dirty and rerun this script every build
+    copy_if_changed(&js_build_path, "assets/index.js");
 }
 
 fn copy_if_changed(from: &str, to: &str) {

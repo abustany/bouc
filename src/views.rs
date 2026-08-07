@@ -8,6 +8,7 @@ use icu::locale::locale;
 use jiff::civil::date;
 use jiff_icu::ConvertInto;
 use maud::{DOCTYPE, Markup, PreEscaped, html};
+use serde::Serialize;
 
 use crate::bookings::{BookingId, Person, PersonId};
 use crate::strings::Locale;
@@ -25,8 +26,9 @@ pub fn layout(locale: Locale, children: Markup) -> Markup {
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { (APP_TITLE) }
                 link rel="stylesheet" href="/assets/styles.css";
-                script src="/assets/vendor/htmx-2.0.10.min.js" {};
-                script src="/assets/day-popover.js" defer {};
+                script src="/assets/vendor/htmx-2.0.10.min.js" defer {};
+                script src="/assets/index.js" defer {};
+                script src="/assets/vendor/alpine-3.15.12.min.js" defer {};
             }
             body
               .grid .grid-flow-row .px-4 .py-2 .justify-center
@@ -69,21 +71,22 @@ pub fn index(opts: IndexOpts) -> Markup {
         opts.locale,
         html! {
             p .pb-2 .text-center .italic { (opts.locale.strings().index_hint) }
-            (calendars(&CalendarsOpts {
+            div
+              x-data="calendar"
+            {
+                (calendars(&CalendarsOpts {
+                    locale: opts.locale,
+                    id: Some(CALENDARS_ELEMENT_ID.to_string()),
+                    start_year: opts.start_year,
+                    start_month: opts.start_month,
+                    sorted_bookings: opts.sorted_bookings,
+                    max_capacity: opts.max_capacity,
+                    people: opts.people,
+                    hx_swap_oob: false,
+                }))
+            }
+            (booking_modal(BookingModalOpts {
                 locale: opts.locale,
-                id: Some(CALENDARS_ELEMENT_ID.to_string()),
-                start_year: opts.start_year,
-                start_month: opts.start_month,
-                sorted_bookings: opts.sorted_bookings,
-                max_capacity: opts.max_capacity,
-                people: opts.people,
-                hx_swap_oob: false,
-            }))
-            (modal(&ModalOpts {
-                title: html! { (s.booking_modal_title_new) },
-                children: booking_modal_contents(opts.locale),
-                id: Some("booking-modal".to_string()),
-                ..Default::default()
             }))
             script {
                 "window.localizedStrings = "
@@ -122,7 +125,6 @@ pub fn calendars(opts: &CalendarsOpts) -> Markup {
         div
           id=[opts.id.clone()]
           hx-swap-oob=(opts.hx_swap_oob)
-          data-calendars
           .grid
           .grid-cols-3
           ."max-[909px]:grid-cols-2"
@@ -260,14 +262,18 @@ fn calendar(opts: &CalendarOpts) -> Markup {
             {
                 @for CalendarDay{day, guest_count, bookings, people} in days {
                     @let style = if day == 1 { Some(format!("grid-column-start: {};", first_month_day.weekday().to_monday_one_offset())) } else { None };
+                    @let yyyymmdd = format!("{:04}{:02}{:02}", opts.year, opts.month, day);
                     div
-                      data-day=(format!("{:04}{:02}{:02}", opts.year, opts.month, day))
                       .grid
                       ."border-2"
                       ."border-transparent"
                       ."border-b-amber-300"[guest_count > 0]
                       ."border-b-red-600"[guest_count >= opts.max_capacity]
                       style=[style]
+                      x-on:mouseenter={"onDayMouseEnter('" (yyyymmdd) "')"}
+                      x-on:focusin={"onDayMouseEnter('" (yyyymmdd) "')"}
+                      x-on:mouseleave="onDayMouseLeave()"
+                      x-ref={"cell-" (yyyymmdd)}
                     {
 
                       button
@@ -277,6 +283,8 @@ fn calendar(opts: &CalendarOpts) -> Markup {
                         ."w-[2.5rem]"
                         .rounded-full
                         ."hover:bg-border"
+                        "x-on:click.self"={"onDayClick('" (yyyymmdd) "')"}
+                        ":class"={"pendingBookingDayClass('" (yyyymmdd) "')"}
                         type="button"
                       { (day) }
 
@@ -292,6 +300,16 @@ fn date_to_yyyymmdd(d: &jiff::civil::Date) -> String {
     d.strftime("%Y%m%d").to_string()
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JsBooking {
+    id: String,
+    start_day: String,
+    end_day: String,
+    name: String,
+    guest_count: u32,
+}
+
 fn day_popover(
     locale: Locale,
     day: jiff::civil::Date,
@@ -299,19 +317,24 @@ fn day_popover(
     people: &HashMap<PersonId, Person>,
 ) -> Markup {
     let s = locale.strings();
+    let yyyymmdd = date_to_yyyymmdd(&day);
+    let open_condition = format!("shouldShowPopoverForDay('{yyyymmdd}')");
 
     html! {
         // the vertical padding is the visual gap to the day cell, kept inside the
         // popover so the pointer never leaves the cell on its way here
         div
-          data-day-popover
-          hidden
+          x-cloak
+          ":style"={(open_condition) " ? '' : 'visibility:hidden'"}
+          x-effect={(open_condition) " && placePopover('" (yyyymmdd) "')"}
+          "x-on:scroll.window.passive"={(open_condition) " && placePopover('" (yyyymmdd) "')"}
+          x-ref={"day-popover-" (yyyymmdd)}
           .fixed
           ."z-[1000]"
           ."w-max"
           ."max-w-[30rem]"
           ."py-1"
-        {
+          {
             div
               .grid
               .grid-flow-row
@@ -334,6 +357,14 @@ fn day_popover(
                     ul .grid ."gap-1" {
                         @for b in bookings {
                             @let creator_name = people.get(&b.creator_id).map(|p| p.name.as_str()).unwrap_or(s.unknown_person);
+                            @let js_booking = JsBooking {
+                                id: u32::from(b.id).to_string(),
+                                start_day: date_to_yyyymmdd(&b.start_date),
+                                end_day: date_to_yyyymmdd(&b.end_date),
+                                name: creator_name.to_string(),
+                                guest_count: b.guest_count,
+                            };
+
                             li {
                                 (day_name(locale, &b.start_date))
                                 " → "
@@ -344,12 +375,7 @@ fn day_popover(
                                 (s.guests(b.guest_count))
                                 ") "
                                 button
-                                  data-edit-booking
-                                  data-booking-id=(u32::from(b.id))
-                                  data-start-date=(date_to_yyyymmdd(&b.start_date))
-                                  data-end-date=(date_to_yyyymmdd(&b.end_date))
-                                  data-name=(creator_name)
-                                  data-guest-count=(b.guest_count)
+                                  x-on:click={"editBooking(" (serde_json::to_string(&js_booking).expect("error serializing booking")) ")"}
                                   title=(s.day_popover_edit_button_title)
                                   .cursor-pointer
                                 {
@@ -357,8 +383,6 @@ fn day_popover(
                                 }
                                 " "
                                 button
-                                  data-delete-booking
-                                  data-booking-id=(u32::from(b.id))
                                   title=(s.day_popover_delete_button_title)
                                   hx-confirm=(s.day_popover_confirm_delete_message)
                                   hx-delete={"/bookings/" (u32::from(b.id))}
@@ -373,7 +397,7 @@ fn day_popover(
                 }
 
                 button
-                  data-start-booking
+                  x-on:click={"startBooking('" (yyyymmdd) "')"}
                   .justify-self-center
                   .btn-primary
                 {
@@ -390,6 +414,8 @@ struct ModalOpts {
     title: Markup,
     children: Markup,
     id: Option<String>,
+    x_ref: Option<String>,
+    on_close: Option<String>,
 }
 
 fn modal(opts: &ModalOpts) -> Markup {
@@ -397,20 +423,45 @@ fn modal(opts: &ModalOpts) -> Markup {
         dialog
           .w-full ."max-w-[600px]" .m-auto ."bg-white" ."px-4" ."py-2" ."rounded-2xl" ."backdrop:bg-black/50"
           id=[opts.id.clone()]
-          data-modal
+          x-ref=[opts.x_ref.clone()]
+          x-on:close=[opts.on_close.clone()]
         {
             // display utilities on the dialog itself would override the user
             // agent's display:none for the closed state
             div .grid .grid-flow-row {
                 div .grid ."grid-cols-[1fr_auto]" .gap-2 .mb-1 {
-                    div data-title .font-semibold { (opts.title) }
+                    div .font-semibold { (opts.title) }
                     button
-                      data-close-button
+                      .grid .place-content-center .rounded-full .size-5 ."hover:bg-red-400"
+                      x-on:click="$el.closest('dialog').close()"
                       aria-label=(opts.locale.strings().modal_close)
                     { "×" }
                 }
                 (opts.children)
             }
+        }
+    }
+}
+
+struct BookingModalOpts {
+    locale: Locale,
+}
+
+fn booking_modal(opts: BookingModalOpts) -> Markup {
+    let s = opts.locale.strings();
+
+    html! {
+        div
+          x-data="editBooking"
+          x-on:booking-saved="onBookingSaved()"
+        {
+            (modal(&ModalOpts {
+                title: html! { span x-text="modalTitle" { (s.booking_modal_title_new) }},
+                children: booking_modal_contents(opts.locale),
+                x_ref: Some("modal".to_string()),
+                on_close: Some("onModalClose()".to_string()),
+                ..Default::default()
+            }))
         }
     }
 }
@@ -429,23 +480,23 @@ fn booking_modal_contents(locale: Locale) -> Markup {
             div {
                 (s.booking_modal_dates)
                 ": "
-                span data-start-date {}
+                span x-text="booking ? formatDate(booking.startDay) : null" {}
                 " → "
-                span data-end-date {}
+                span x-text="booking ? formatDate(booking.endDay) : null" {}
             }
             label .grid ."grid-cols-[auto_1fr]" .items-center .gap-1 {
                 (s.booking_modal_name)
                 ": "
-                input type="text" name="name" required {}
+                input type="text" name="name" ":value"="booking?.name" required autofocus {}
             }
             label .grid ."grid-cols-[auto_1fr]" .items-center .gap-1 {
                 (s.booking_modal_guest_count)
                 ": "
-                input type="number" name="guest_count" min="1" value="1" {}
+                input type="number" name="guest_count" min="1" ":value"="booking?.guestCount" required {}
             }
-            input type="hidden" name="id" {}
-            input type="hidden" name="start_date" {}
-            input type="hidden" name="end_date" {}
+            input type="hidden" name="id" ":value"="booking?.id" {}
+            input type="hidden" name="start_date" ":value"="booking?.startDay" {}
+            input type="hidden" name="end_date" ":value"="booking?.endDay" {}
             div .grid .justify-end .mt-2 {
                 button .btn-primary {
                     (s.booking_modal_save)
