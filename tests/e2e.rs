@@ -5,7 +5,6 @@
 
 use std::net::SocketAddr;
 use std::process::{Child, Command, Stdio};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -14,9 +13,9 @@ use fantoccini::{Client, ClientBuilder, Locator};
 use hyper_util::client::legacy::connect::HttpConnector;
 use serde_json::{Value, json};
 
-use bouc::sqlite::SqliteRepository;
+use bouc::sqlite::MEMORY_DB;
+use bouc::start;
 use bouc::strings::Locale;
-use bouc::web;
 
 const WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -178,18 +177,11 @@ fn booking_day(day: i8) -> Result<String> {
 }
 
 async fn serve() -> Result<SocketAddr> {
-    let repo = SqliteRepository::open(":memory:")
-        .await
-        .context("opening in-memory database")?;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .context("binding listener")?;
-    let addr = listener.local_addr().context("reading listener address")?;
+    let port = free_port()?;
+    let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
 
     tokio::spawn(async move {
-        axum::serve(listener, web::router(Arc::new(repo)))
-            .await
-            .expect("serving");
+        start(MEMORY_DB, addr).await.expect("serving");
     });
 
     Ok(addr)

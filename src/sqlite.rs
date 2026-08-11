@@ -13,6 +13,8 @@ pub struct SqliteRepository {
     conn: Connection,
 }
 
+pub const MEMORY_DB: &str = ":memory:";
+
 impl SqliteRepository {
     pub async fn open(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = path.as_ref().to_path_buf();
