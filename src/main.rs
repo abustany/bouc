@@ -1,14 +1,9 @@
-mod bookings;
-mod sqlite;
-mod strings;
-mod views;
-mod web;
-
 use std::sync::Arc;
 
 use anyhow::Context;
 
-use crate::sqlite::SqliteRepository;
+use bouc::sqlite::SqliteRepository;
+use bouc::web;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

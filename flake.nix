@@ -61,11 +61,29 @@
 
           bouc-clippy = craneLib.cargoClippy ( craneCommonArgs // { inherit cargoArtifacts; } );
           bouc-fmt = craneLib.cargoFmt { inherit src; };
+        }
+        # nixpkgs has no chromium on darwin: build checks.<linux system>.bouc-e2e
+        # from there, nix hands it to a linux builder
+        // lib.optionalAttrs stdenv.hostPlatform.isLinux {
+          bouc-e2e = craneLib.cargoTest ( craneCommonArgs // {
+            inherit cargoArtifacts;
+            cargoTestExtraArgs = "--test e2e";
+            nativeBuildInputs = craneCommonArgs.nativeBuildInputs ++ [ chromedriver chromium ];
+            CHROME_BINARY = "${chromium}/bin/chromium";
+            # the UI has emoji in it, and skia aborts the renderer rather than
+            # fall back to a font it cannot find
+            FONTCONFIG_FILE = makeFontsConf {
+              fontDirectories = [ dejavu_fonts noto-fonts-color-emoji ];
+            };
+            # chrome refuses to start without a writable home
+            preCheck = "export HOME=$(mktemp -d)";
+          } );
         };
         packages.default = bouc;
         apps.default = flake-utils.lib.mkApp { drv = bouc; };
         devShells.default = mkShell {
           buildInputs = [
+            chromedriver
             rolldown
             rust
             tailwindcss_4
