@@ -55,12 +55,52 @@ interface PendingBooking {
   id?: string;
   startDay: string;
   endDay: string;
-  name: string;
   guestCount: number;
 }
 
-interface RootData {
+const isAppComponent = Symbol("app");
+
+interface AppComponentData {
+  isAppComponent: typeof isAppComponent;
   currentBooking: PendingBooking | null;
+  userId: string | null;
+
+  ensureLoggedIn(): void;
+  onUserLoggedIn(userId: string): void;
+  onUserLoggedOut(): void;
+}
+
+const AppComponent: (
+  userId: string | null,
+) => AlpineComponent<AppComponentData> = (userId) => ({
+  isAppComponent,
+  currentBooking: null,
+  userId,
+  ensureLoggedIn() {
+    if (this.userId !== null) return;
+    this.$dispatch("show-name-modal");
+  },
+
+  onUserLoggedIn(userId: string) {
+    this.userId = userId;
+  },
+
+  onUserLoggedOut() {
+    this.userId = null;
+  },
+});
+
+function asAppChild(obj: unknown): AppComponentData {
+  if (
+    typeof obj !== "object" ||
+    obj === null ||
+    !("isAppComponent" in obj) ||
+    obj.isAppComponent !== isAppComponent
+  ) {
+    throw new Error("Not an app child");
+  }
+
+  return obj as AppComponentData;
 }
 
 interface CalendarComponentData {
@@ -92,9 +132,7 @@ interface CalendarComponentData {
   booking: PendingBooking | null;
 }
 
-const CalendarComponent: (
-  rootData: RootData,
-) => AlpineComponent<CalendarComponentData> = (rootData) => ({
+const CalendarComponent: () => AlpineComponent<CalendarComponentData> = () => ({
   state: {
     kind: "init",
     hoveredDay: null,
@@ -146,7 +184,9 @@ const CalendarComponent: (
         kind: "completingBooking",
         booking: this.state.booking,
       };
-      rootData.currentBooking = this.state.booking;
+
+      asAppChild(this).currentBooking = this.state.booking;
+      asAppChild(this).ensureLoggedIn();
     }
   },
 
@@ -174,70 +214,99 @@ const CalendarComponent: (
       booking: {
         startDay: day,
         endDay: day,
-        name: "",
         guestCount: 1,
       },
     };
   },
 
   editBooking(b: PendingBooking) {
-    rootData.currentBooking = b;
+    asAppChild(this).currentBooking = b;
   },
 
   get booking() {
-    return rootData.currentBooking;
+    return asAppChild(this).currentBooking;
   },
 });
 
 interface EditBookingComponentData {
   booking: PendingBooking | null;
+  shouldShowModal: boolean;
   modalTitle: string;
   onModalClose(): void;
   onBookingSaved(): void;
 }
 
-const EditBookingComponent: (
-  rootData: RootData,
-) => AlpineComponent<EditBookingComponentData> = (rootData) => ({
-  get booking() {
-    return rootData.currentBooking;
-  },
+const EditBookingComponent: () => AlpineComponent<EditBookingComponentData> =
+  () => ({
+    get booking() {
+      return asAppChild(this).currentBooking;
+    },
 
-  get modalTitle() {
-    return rootData.currentBooking?.id
-      ? window.localizedStrings.booking_modal_title_edit
-      : window.localizedStrings.booking_modal_title_new;
-  },
+    get shouldShowModal() {
+      return (
+        asAppChild(this).userId !== null &&
+        asAppChild(this).currentBooking !== null
+      );
+    },
 
-  onModalClose() {
-    rootData.currentBooking = null;
-  },
+    get modalTitle() {
+      return asAppChild(this).currentBooking?.id
+        ? window.localizedStrings.booking_modal_title_edit
+        : window.localizedStrings.booking_modal_title_new;
+    },
 
-  onBookingSaved() {
-    rootData.currentBooking = null;
-  },
+    onModalClose() {
+      asAppChild(this).currentBooking = null;
+    },
 
-  init() {
-    const modal = this.$refs.modal as HTMLDialogElement;
+    onBookingSaved() {
+      asAppChild(this).currentBooking = null;
+    },
 
-    this.$watch("booking", (b) => {
-      if (b) {
-        modal.showModal();
-      } else {
-        modal.close();
-      }
-    });
-  },
+    init() {
+      const modal = this.$refs.modal as HTMLDialogElement;
 
-  close() {
-    rootData.currentBooking = null;
-  },
-});
+      this.$watch("shouldShowModal", (b) => {
+        if (b) {
+          modal.showModal();
+        } else {
+          modal.close();
+        }
+      });
+    },
+
+    close() {
+      asAppChild(this).currentBooking = null;
+    },
+  });
+
+interface NameModalComponentData {
+  showModal(): void;
+  appUserId: string | null;
+}
+
+const NameModalComponent: () => AlpineComponent<NameModalComponentData> =
+  () => ({
+    showModal() {
+      (this.$refs.modal as HTMLDialogElement).showModal();
+    },
+
+    get appUserId() {
+      return asAppChild(this).userId;
+    },
+
+    init() {
+      this.$watch("appUserId", (userId) => {
+        if (userId !== null) {
+          (this.$refs.modal as HTMLDialogElement).close();
+        }
+      });
+    },
+  });
 
 document.addEventListener("alpine:init", () => {
-  const rootData = Alpine.reactive({
-    currentBooking: null as PendingBooking | null,
-  });
-  Alpine.data("calendar", () => CalendarComponent(rootData));
-  Alpine.data("editBooking", () => EditBookingComponent(rootData));
+  Alpine.data("app", (userId: string | null) => AppComponent(userId));
+  Alpine.data("calendar", () => CalendarComponent());
+  Alpine.data("editBooking", () => EditBookingComponent());
+  Alpine.data("nameModal", () => NameModalComponent());
 });

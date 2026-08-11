@@ -1,7 +1,9 @@
+use std::ops::Deref;
 use std::sync::Arc;
 use std::{collections::HashMap, convert::Infallible};
 
 use anyhow::Context;
+use axum::extract::FromRef;
 use axum::{
     Form, Router,
     extract::{FromRequestParts, Path, Request, State},
@@ -10,38 +12,62 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
     routing::{delete, get, post},
 };
+use axum_extra::extract::SignedCookieJar;
+use axum_extra::extract::cookie::{Cookie, Key};
 use maud::Markup;
 use rust_embed::RustEmbed;
 use serde::Deserialize;
+use serde_json::json;
 
-use crate::bookings::{self, BookingId, BookingInput};
+use crate::bookings::{self, BookingId, BookingInput, Person, PersonId};
 use crate::bookings::{Repository, validate_person_name};
 use crate::strings::Locale;
 use crate::views::{self, CALENDARS_ELEMENT_ID};
 
-type SharedRepository = Arc<dyn Repository>;
+struct InnerAppState {
+    repo: Box<dyn Repository>,
+    signed_cookies_key: Key,
+}
+
+#[derive(Clone)]
+struct AppState(Arc<InnerAppState>);
+
+impl Deref for AppState {
+    type Target = InnerAppState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl FromRef<AppState> for Key {
+    fn from_ref(state: &AppState) -> Self {
+        state.0.signed_cookies_key.clone()
+    }
+}
 
 const HX_TRIGGER: &str = "hx-trigger";
-
-/// Client-side event fired once a booking has been persisted, see
-/// `src/index.ts`.
-const BOOKING_SAVED_EVENT: &str = "booking-saved";
 
 #[derive(RustEmbed)]
 #[folder = "assets/"]
 struct Assets;
 
-pub fn router(repo: SharedRepository) -> Router {
+pub fn router(repo: impl Repository + 'static, signed_cookies_key: Key) -> Router {
     Router::new()
         // start of app routes
         .route("/", get(index))
+        .route("/login", post(login))
+        .route("/logout", post(logout))
         .route("/bookings", post(create_booking))
         .route("/bookings/{id}", delete(delete_booking))
         // end of app routes, any route *after* the route_layer call below does
         // not get the Vary header properly set to accept-language.
         .route_layer(middleware::from_fn(set_vary_accept_language))
         .route("/assets/{*path}", get(serve_asset))
-        .with_state(repo)
+        .with_state(AppState(Arc::new(InnerAppState {
+            repo: Box::new(repo),
+            signed_cookies_key,
+        })))
 }
 
 async fn set_vary_accept_language(request: Request, next: Next) -> Response {
@@ -106,7 +132,7 @@ impl<S: Send + Sync> FromRequestParts<S> for Locale {
 }
 
 async fn list_bookings(
-    repo: &SharedRepository,
+    repo: &dyn Repository,
     now: &jiff::Zoned,
 ) -> anyhow::Result<Vec<views::Booking>> {
     Ok(repo
@@ -136,7 +162,7 @@ async fn list_bookings(
 }
 
 async fn list_people(
-    repo: &SharedRepository,
+    repo: &dyn Repository,
 ) -> anyhow::Result<HashMap<bookings::PersonId, bookings::Person>> {
     Ok(repo
         .list_people()
@@ -147,36 +173,134 @@ async fn list_people(
         .collect::<HashMap<_, _>>())
 }
 
-async fn index(State(repo): State<SharedRepository>, locale: Locale) -> Result<Markup, AppError> {
+fn get_current_user_id(jar: &SignedCookieJar) -> Option<PersonId> {
+    jar.get(USER_ID_COOKIE_NAME)
+        .and_then(|c| c.value().parse::<u32>().ok())
+        .map(PersonId::new)
+}
+
+async fn index(
+    State(app): State<AppState>,
+    jar: SignedCookieJar,
+    locale: Locale,
+) -> Result<Markup, AppError> {
     let now = jiff::Zoned::now();
     Ok(views::index(views::IndexOpts {
         locale,
         start_year: now.year(),
         start_month: now.month(),
-        sorted_bookings: &list_bookings(&repo, &now)
+        sorted_bookings: &list_bookings(&*app.repo, &now)
             .await
             .context("listing bookings")?,
         max_capacity: 6,
-        people: &list_people(&repo).await.context("listing people")?,
+        people: &list_people(&*app.repo).await.context("listing people")?,
+        user_id: get_current_user_id(&jar),
+    }))
+}
+
+fn is_htmx(headers: &HeaderMap) -> bool {
+    headers.contains_key("hx-request")
+}
+
+const USER_ID_COOKIE_NAME: &str = "bouc-user-id";
+
+#[derive(Deserialize)]
+struct LoginForm {
+    name: String,
+}
+
+async fn login(
+    State(app): State<AppState>,
+    jar: SignedCookieJar,
+    headers: HeaderMap,
+    locale: Locale,
+    Form(form): Form<LoginForm>,
+) -> Result<Response, AppError> {
+    let Ok(name) = validate_person_name(&form.name) else {
+        return Ok((StatusCode::BAD_REQUEST, "invalid name").into_response());
+    };
+
+    let user = app.repo.save_person(&name).await.context("saving user")?;
+    let user_id_str = u32::from(user.id).to_string();
+    let user_id_cookie = Cookie::build((USER_ID_COOKIE_NAME, user_id_str.clone()))
+        .http_only(true)
+        .build();
+    let updated_jar = jar.add(user_id_cookie);
+
+    if is_htmx(&headers) {
+        let logged_in_info = oob_logged_in_info(locale, Some(&user)).await?;
+        Ok((
+            [(
+                HX_TRIGGER,
+                serde_json::to_string(&json!({"user-logged-in": {"userId": &user_id_str}}))
+                    .expect("error marshalling user-logged-in event data"),
+            )],
+            updated_jar,
+            logged_in_info,
+        )
+            .into_response())
+    } else {
+        Ok((updated_jar, Redirect::to("/")).into_response())
+    }
+}
+
+async fn logout(
+    jar: SignedCookieJar,
+    headers: HeaderMap,
+    locale: Locale,
+) -> Result<Response, AppError> {
+    let updated_jar = jar.remove(Cookie::from(USER_ID_COOKIE_NAME));
+
+    if is_htmx(&headers) {
+        let logged_in_info = oob_logged_in_info(locale, None).await?;
+        Ok((
+            [(HX_TRIGGER, "user-logged-out")],
+            updated_jar,
+            logged_in_info,
+        )
+            .into_response())
+    } else {
+        Ok((updated_jar, Redirect::to("/")).into_response())
+    }
+}
+
+async fn oob_logged_in_info(
+    locale: Locale,
+    current_user: Option<&Person>,
+) -> Result<Markup, AppError> {
+    let people: HashMap<PersonId, Person> = if let Some(u) = current_user {
+        vec![(u.id, u.clone())].into_iter().collect()
+    } else {
+        HashMap::new()
+    };
+
+    Ok(views::logged_in_info(&views::LoggedInInfoOpts {
+        id: Some(views::LOGGED_IN_INFO_ELEMENT_ID.to_string()),
+        hx_swap_oob: true,
+        locale,
+        people: &people,
+        user_id: current_user.map(|u| u.id),
     }))
 }
 
 #[derive(Deserialize)]
 struct CreateBookingForm {
     id: Option<String>,
-    name: String,
     start_date: String,
     end_date: String,
     guest_count: String,
 }
 
 async fn create_booking(
-    State(repo): State<SharedRepository>,
+    State(app): State<AppState>,
+    jar: SignedCookieJar,
     headers: HeaderMap,
     locale: Locale,
     Form(form): Form<CreateBookingForm>,
 ) -> Result<Response, AppError> {
-    let is_htmx = headers.contains_key("hx-request");
+    let Some(creator_id) = get_current_user_id(&jar) else {
+        return Ok((StatusCode::UNAUTHORIZED, "unauthorized").into_response());
+    };
 
     let Ok(start_date) = form.start_date.parse::<jiff::civil::Date>() else {
         return Ok((StatusCode::BAD_REQUEST, "invalid start date").into_response());
@@ -190,12 +314,7 @@ async fn create_booking(
         return Ok((StatusCode::BAD_REQUEST, "invalid guest count").into_response());
     };
 
-    let Ok(name) = validate_person_name(&form.name) else {
-        return Ok((StatusCode::BAD_REQUEST, "invalid name").into_response());
-    };
-    let creator = repo.save_person(&name).await.context("saving creator")?;
-
-    let Ok(booking) = BookingInput::new(start_date, end_date, creator.id, guest_count) else {
+    let Ok(booking) = BookingInput::new(start_date, end_date, creator_id, guest_count) else {
         return Ok((StatusCode::BAD_REQUEST, "invalid booking").into_response());
     };
 
@@ -210,31 +329,38 @@ async fn create_booking(
         None
     };
 
-    repo.save_booking(booking_id, &booking)
+    app.repo
+        .save_booking(booking_id, &booking)
         .await
         .context("saving booking")?;
 
-    if is_htmx {
-        let calendars = oob_calendars(&repo, locale).await?;
-        Ok(([(HX_TRIGGER, BOOKING_SAVED_EVENT)], calendars).into_response())
+    if is_htmx(&headers) {
+        let calendars = oob_calendars(&*app.repo, locale).await?;
+        Ok(([(HX_TRIGGER, "booking-saved")], calendars).into_response())
     } else {
         Ok(Redirect::to("/").into_response())
     }
 }
 
 async fn delete_booking(
-    State(repo): State<SharedRepository>,
+    State(app): State<AppState>,
+    jar: SignedCookieJar,
     locale: Locale,
     Path(id): Path<u32>,
-) -> Result<Markup, AppError> {
-    repo.delete_booking(BookingId::new(id))
+) -> Result<Response, AppError> {
+    let Some(user_id) = get_current_user_id(&jar) else {
+        return Ok((StatusCode::UNAUTHORIZED, "unauthorized").into_response());
+    };
+
+    app.repo
+        .delete_booking(BookingId::new(id), user_id)
         .await
         .context("deleting booking")?;
 
-    oob_calendars(&repo, locale).await
+    Ok(oob_calendars(&*app.repo, locale).await.into_response())
 }
 
-async fn oob_calendars(repo: &SharedRepository, locale: Locale) -> Result<Markup, AppError> {
+async fn oob_calendars(repo: &dyn Repository, locale: Locale) -> Result<Markup, AppError> {
     let now = jiff::Zoned::now();
     Ok(views::calendars(&views::CalendarsOpts {
         id: Some(CALENDARS_ELEMENT_ID.to_string()),

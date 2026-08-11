@@ -108,7 +108,7 @@ pub trait Repository: Send + Sync {
     async fn list_bookings(&self, after: Date) -> Result<Vec<Booking>>;
 
     /// Delete a booking, doing nothing if no booking has that id.
-    async fn delete_booking(&self, id: BookingId) -> Result<()>;
+    async fn delete_booking(&self, id: BookingId, creator_id: PersonId) -> Result<()>;
 }
 
 #[derive(Debug, Error)]

@@ -14,9 +14,20 @@ use crate::bookings::{BookingId, Person, PersonId};
 use crate::strings::Locale;
 
 const APP_TITLE: &str = "Bouc 🐏";
+pub const LOGGED_IN_INFO_ELEMENT_ID: &str = "logged-in-info";
 
-pub fn layout(locale: Locale, children: Markup) -> Markup {
-    let s = locale.strings();
+pub struct LayoutOpts<'a> {
+    locale: Locale,
+    people: &'a HashMap<PersonId, Person>,
+    user_id: Option<PersonId>,
+}
+
+pub fn layout(opts: &LayoutOpts, children: Markup) -> Markup {
+    let s = opts.locale.strings();
+    let user_id_js_str = opts
+        .user_id
+        .map(|id| format!("'{}'", u32::from(id)))
+        .unwrap_or("null".to_owned());
 
     html! {
         (DOCTYPE)
@@ -31,9 +42,17 @@ pub fn layout(locale: Locale, children: Markup) -> Markup {
                 script src="/assets/vendor/alpine-3.15.12.min.js" defer {};
             }
             body
+              x-data={"app(" (user_id_js_str) ")"}
+              x-on:user-logged-in="onUserLoggedIn($event.detail.userId)"
+              x-on:user-logged-out="onUserLoggedOut()"
               .grid .grid-flow-row .px-4 .py-2 .justify-center
             {
                 h1 .text-xl .text-center .mb-2 { (APP_TITLE) }
+                div
+                  .fixed .top-2 .right-2
+                {
+                    (logged_in_info(&LoggedInInfoOpts { id: Some(LOGGED_IN_INFO_ELEMENT_ID.to_string()), hx_swap_oob: false, locale: opts.locale, people: opts.people, user_id: opts.user_id }))
+                }
                 (children)
             }
         }
@@ -47,6 +66,7 @@ pub struct IndexOpts<'a, 'b> {
     pub sorted_bookings: &'a [Booking],
     pub max_capacity: u32,
     pub people: &'b HashMap<PersonId, Person>,
+    pub user_id: Option<PersonId>,
 }
 
 pub const CALENDARS_ELEMENT_ID: &str = "calendars";
@@ -68,7 +88,11 @@ pub fn index(opts: IndexOpts) -> Markup {
     let s = opts.locale.strings();
 
     layout(
-        opts.locale,
+        &LayoutOpts {
+            locale: opts.locale,
+            people: opts.people,
+            user_id: opts.user_id,
+        },
         html! {
             p .pb-2 .text-center .italic { (opts.locale.strings().index_hint) }
             div
@@ -85,7 +109,10 @@ pub fn index(opts: IndexOpts) -> Markup {
                     hx_swap_oob: false,
                 }))
             }
-            (booking_modal(BookingModalOpts {
+            (booking_modal(&BookingModalOpts {
+                locale: opts.locale,
+            }))
+            (name_modal(&NameModalOpts {
                 locale: opts.locale,
             }))
             script {
@@ -375,8 +402,10 @@ fn day_popover(
                                 (s.guests(b.guest_count))
                                 ") "
                                 button
-                                  x-on:click={"editBooking(" (serde_json::to_string(&js_booking).expect("error serializing booking")) ")"}
                                   title=(s.day_popover_edit_button_title)
+                                  x-cloak
+                                  x-show={"userId === '" (u32::from(b.creator_id)) "'"}
+                                  x-on:click={"editBooking(" (serde_json::to_string(&js_booking).expect("error serializing booking")) ")"}
                                   .cursor-pointer
                                 {
                                     "✏️"
@@ -384,6 +413,8 @@ fn day_popover(
                                 " "
                                 button
                                   title=(s.day_popover_delete_button_title)
+                                  x-cloak
+                                  x-show={"userId === '" (u32::from(b.creator_id)) "'"}
                                   hx-confirm=(s.day_popover_confirm_delete_message)
                                   hx-delete={"/bookings/" (u32::from(b.id))}
                                   hx-swap="none" // server will OOB-swap the calendars
@@ -447,7 +478,7 @@ struct BookingModalOpts {
     locale: Locale,
 }
 
-fn booking_modal(opts: BookingModalOpts) -> Markup {
+fn booking_modal(opts: &BookingModalOpts) -> Markup {
     let s = opts.locale.strings();
 
     html! {
@@ -485,11 +516,6 @@ fn booking_modal_contents(locale: Locale) -> Markup {
                 span x-text="booking ? formatDate(booking.endDay) : null" {}
             }
             label .grid ."grid-cols-[auto_1fr]" .items-center .gap-1 {
-                (s.booking_modal_name)
-                ": "
-                input type="text" name="name" ":value"="booking?.name" required autofocus {}
-            }
-            label .grid ."grid-cols-[auto_1fr]" .items-center .gap-1 {
                 (s.booking_modal_guest_count)
                 ": "
                 input type="number" name="guest_count" min="1" ":value"="booking?.guestCount" required {}
@@ -500,6 +526,98 @@ fn booking_modal_contents(locale: Locale) -> Markup {
             div .grid .justify-end .mt-2 {
                 button .btn-primary {
                     (s.booking_modal_save)
+                }
+            }
+        }
+    }
+}
+
+struct NameModalOpts {
+    locale: Locale,
+}
+
+fn name_modal(opts: &NameModalOpts) -> Markup {
+    let s = opts.locale.strings();
+
+    html! {
+        div
+          x-data="nameModal"
+          "x-on:show-name-modal.window"="showModal()"
+        {
+            (modal(&ModalOpts {
+                title: html! { (s.name_modal_title) },
+                children: name_modal_contents(opts.locale),
+                x_ref: Some("modal".to_string()),
+                ..Default::default()
+            }))
+        }
+    }
+}
+
+fn name_modal_contents(locale: Locale) -> Markup {
+    let s = locale.strings();
+
+    html! {
+        form
+          .grid .grid-flow-row .gap-1 .my-1
+          method="post"
+          action="/login"
+          hx-post="/login"
+          hx-swap="none" // server will OOB-swap the profile header
+        {
+            label .grid ."grid-cols-[auto_1fr]" .items-center .gap-1 {
+                (s.name_modal_name)
+                ": "
+                input type="text" name="name" required autofocus {}
+            }
+            div .grid .justify-end .mt-2 {
+                button .btn-primary {
+                    (s.name_modal_save)
+                }
+            }
+        }
+
+    }
+}
+
+pub struct LoggedInInfoOpts<'a> {
+    pub id: Option<String>,
+    pub hx_swap_oob: bool,
+    pub locale: Locale,
+    pub people: &'a HashMap<PersonId, Person>,
+    pub user_id: Option<PersonId>,
+}
+
+pub fn logged_in_info(opts: &LoggedInInfoOpts) -> Markup {
+    let s = opts.locale.strings();
+
+    html! {
+        div
+          .flex .flex-row .items-center .gap-1
+          id=[opts.id.clone()]
+          hx-swap-oob=(opts.hx_swap_oob)
+        {
+            @match opts.user_id {
+                Some(user_id) => {
+                    @let name = opts.people.get(&user_id).map(|p| p.name.as_str()).unwrap_or(s.unknown_person);
+                    {
+                        "👤 " (name)
+                        button
+                        .grid .place-content-center .size-5 .rounded-full ."hover:bg-red-400"
+                        title=(s.profile_disconnect)
+                        hx-post="/logout"
+                        {
+                            "⏻️"
+                        }
+                    }
+                }
+                None => {
+                    button
+                    .btn-primary
+                    x-on:click="ensureLoggedIn()"
+                    {
+                        (s.profile_login)
+                    }
                 }
             }
         }

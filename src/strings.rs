@@ -73,9 +73,13 @@ pub struct Strings {
     pub booking_modal_title_new: &'static str,
     pub booking_modal_title_edit: &'static str,
     pub booking_modal_dates: &'static str,
-    pub booking_modal_name: &'static str,
     pub booking_modal_guest_count: &'static str,
     pub booking_modal_save: &'static str,
+    pub name_modal_title: &'static str,
+    pub name_modal_name: &'static str,
+    pub name_modal_save: &'static str,
+    pub profile_login: &'static str,
+    pub profile_disconnect: &'static str,
 }
 
 impl Strings {
@@ -111,9 +115,13 @@ static FR: Strings = Strings {
     booking_modal_title_new: "Nouvelle réservation",
     booking_modal_title_edit: "Modifier la réservation",
     booking_modal_dates: "Dates",
-    booking_modal_name: "Nom",
     booking_modal_guest_count: "Personnes",
     booking_modal_save: "Enregistrer",
+    name_modal_title: "Comment t'appelle-tu ?",
+    name_modal_name: "Nom",
+    name_modal_save: "Enregistrer",
+    profile_login: "S'identifier",
+    profile_disconnect: "Se déconnecter",
 };
 
 static EN: Strings = Strings {
@@ -138,9 +146,13 @@ static EN: Strings = Strings {
     booking_modal_title_new: "New booking",
     booking_modal_title_edit: "Edit booking",
     booking_modal_dates: "Dates",
-    booking_modal_name: "Name",
     booking_modal_guest_count: "Guests",
     booking_modal_save: "Save",
+    name_modal_title: "What's your name?",
+    name_modal_name: "Name",
+    name_modal_save: "Save",
+    profile_login: "Login",
+    profile_disconnect: "Disconnect",
 };
 
 #[cfg(test)]

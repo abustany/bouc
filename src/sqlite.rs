@@ -160,12 +160,12 @@ impl Repository for SqliteRepository {
             .context("listing bookings")
     }
 
-    async fn delete_booking(&self, id: BookingId) -> anyhow::Result<()> {
+    async fn delete_booking(&self, id: BookingId, creator_id: PersonId) -> anyhow::Result<()> {
         self.conn
             .call(move |conn| -> rusqlite::Result<()> {
                 conn.execute(
-                    "DELETE FROM bookings WHERE id = ?1",
-                    rusqlite::params![u32::from(id)],
+                    "DELETE FROM bookings WHERE id = ?1 AND creator_id = ?2",
+                    rusqlite::params![u32::from(id), u32::from(creator_id)],
                 )?;
                 Ok(())
             })
@@ -301,6 +301,7 @@ mod tests {
     async fn deletes_booking_and_ignores_missing_ones() {
         let repo = setup().await;
         let person = repo.save_person("Alice").await.unwrap();
+        let other_person = repo.save_person("Bob").await.unwrap();
         let created = repo
             .save_booking(
                 None,
@@ -309,10 +310,15 @@ mod tests {
             .await
             .unwrap();
 
-        repo.delete_booking(created.id).await.unwrap();
+        repo.delete_booking(created.id, other_person.id)
+            .await
+            .unwrap();
+        assert!(repo.list_bookings(start_date()).await.unwrap().len() == 1);
+
+        repo.delete_booking(created.id, person.id).await.unwrap();
         assert!(repo.list_bookings(start_date()).await.unwrap().is_empty());
 
-        repo.delete_booking(created.id).await.unwrap();
+        repo.delete_booking(created.id, person.id).await.unwrap();
     }
 
     #[tokio::test]

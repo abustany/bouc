@@ -23,6 +23,11 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const BOOKED_CLASS: &str = "border-b-amber-300";
 const FULL_CLASS: &str = "border-b-red-600";
 
+/// The page holds one dialog per modal, told apart by the form they submit.
+const BOOKING_MODAL: &str = "dialog:has(form[action='/bookings'])";
+const LOGIN_MODAL: &str = "dialog:has(form[action='/login'])";
+const LOGGED_IN_INFO: &str = "#logged-in-info";
+
 /// Server-side `max_capacity`, reaching it turns the day cell red.
 const MAX_CAPACITY: u32 = 6;
 
@@ -51,44 +56,46 @@ async fn scenario(client: &Client, addr: SocketAddr) -> Result<()> {
     let s = Locale::En.strings();
     let (start, middle, end) = (booking_day(10)?, booking_day(11)?, booking_day(12)?);
     let days = [start.as_str(), middle.as_str(), end.as_str()];
+    let name_input = format!("{LOGIN_MODAL} input[name='name']");
+    let guest_count_input = format!("{BOOKING_MODAL} input[name='guest_count']");
 
     client
         .goto(&format!("http://{addr}/"))
         .await
         .context("loading the index page")?;
 
-    click(client, &day_button(&start)).await?;
-    wait_for_visible(client, &popover(&start)).await?;
-    click(client, &format!("{} button.btn-primary", popover(&start))).await?;
-    hover(client, &cell(&end)).await?;
-    click(client, &day_button(&end)).await?;
-    wait_for_modal(client, true).await?;
-
-    let name_input = "dialog input[name='name']";
-    let guest_count_input = "dialog input[name='guest_count']";
+    pick_days(client, &start, &end).await?;
+    wait_for_modal(client, LOGIN_MODAL, true).await?;
+    assert!(
+        !modal_open(client, BOOKING_MODAL).await?,
+        "the booking modal was shown to a visitor without a session"
+    );
 
     watch_requests(client).await?;
 
-    fill(client, guest_count_input, "3").await?;
-    submit(client).await?;
+    submit(client, LOGIN_MODAL).await?;
     assert!(
         !requested(client).await?,
-        "the booking form was submitted without a name"
+        "the login form was submitted without a name"
     );
-    assert!(value_missing(client, name_input).await?);
+    assert!(value_missing(client, &name_input).await?);
 
-    fill(client, name_input, "Alice").await?;
-    clear(client, guest_count_input).await?;
-    submit(client).await?;
+    log_in(client, "Alice").await?;
+    wait_for_modal(client, BOOKING_MODAL, true).await?;
+
+    watch_requests(client).await?;
+
+    clear(client, &guest_count_input).await?;
+    submit(client, BOOKING_MODAL).await?;
     assert!(
         !requested(client).await?,
         "the booking form was submitted without a guest count"
     );
-    assert!(value_missing(client, guest_count_input).await?);
+    assert!(value_missing(client, &guest_count_input).await?);
 
-    fill(client, guest_count_input, "3").await?;
-    submit(client).await?;
-    wait_for_modal(client, false).await?;
+    fill(client, &guest_count_input, "3").await?;
+    submit(client, BOOKING_MODAL).await?;
+    wait_for_modal(client, BOOKING_MODAL, false).await?;
 
     for day in days {
         wait_for_class(client, &cell(day), BOOKED_CLASS, true).await?;
@@ -101,18 +108,24 @@ async fn scenario(client: &Client, addr: SocketAddr) -> Result<()> {
         "unexpected booking entry: {entry}"
     );
 
-    click(
-        client,
-        &format!("{} li button:not([hx-delete])", popover(&start)),
-    )
-    .await?;
-    wait_for_modal(client, true).await?;
-    assert_eq!(value(client, name_input).await?, "Alice");
-    assert_eq!(value(client, guest_count_input).await?, "3");
+    booking_with_a_session(client).await?;
 
-    fill(client, guest_count_input, &MAX_CAPACITY.to_string()).await?;
-    submit(client).await?;
-    wait_for_modal(client, false).await?;
+    // the creator gets the edit and delete buttons
+    open_popover(client, &start).await?;
+    wait_for_displayed_count(client, &edit_button(&start), 1).await?;
+    wait_for_displayed_count(client, &delete_button(&start), 1).await?;
+
+    click(client, &edit_button(&start)).await?;
+    wait_for_modal(client, BOOKING_MODAL, true).await?;
+    assert!(
+        !modal_open(client, LOGIN_MODAL).await?,
+        "the name modal was shown while editing with a valid session"
+    );
+    assert_eq!(value(client, &guest_count_input).await?, "3");
+
+    fill(client, &guest_count_input, &MAX_CAPACITY.to_string()).await?;
+    submit(client, BOOKING_MODAL).await?;
+    wait_for_modal(client, BOOKING_MODAL, false).await?;
 
     for day in days {
         wait_for_class(client, &cell(day), FULL_CLASS, true).await?;
@@ -124,7 +137,30 @@ async fn scenario(client: &Client, addr: SocketAddr) -> Result<()> {
         "the edited guest count is missing from: {entry}"
     );
 
-    click(client, &format!("{} li button[hx-delete]", popover(&start))).await?;
+    // neither a visitor without a session nor another user may touch the booking
+    log_out(client, s.profile_login).await?;
+    open_popover(client, &start).await?;
+    wait_for_displayed_count(client, &edit_button(&start), 0).await?;
+    wait_for_displayed_count(client, &delete_button(&start), 0).await?;
+
+    open_login_modal(client).await?;
+    log_in(client, "Bob").await?;
+    assert!(
+        !modal_open(client, BOOKING_MODAL).await?,
+        "logging in from the header opened the booking modal"
+    );
+
+    open_popover(client, &start).await?;
+    wait_for_displayed_count(client, &edit_button(&start), 0).await?;
+    wait_for_displayed_count(client, &delete_button(&start), 0).await?;
+
+    log_out(client, s.profile_login).await?;
+    open_login_modal(client).await?;
+    log_in(client, "Alice").await?;
+
+    open_popover(client, &start).await?;
+    wait_for_displayed_count(client, &delete_button(&start), 1).await?;
+    click(client, &delete_button(&start)).await?;
 
     for day in days {
         wait_for_class(client, &cell(day), BOOKED_CLASS, false).await?;
@@ -134,11 +170,80 @@ async fn scenario(client: &Client, addr: SocketAddr) -> Result<()> {
     Ok(())
 }
 
+/// A logged in user goes straight to the booking form, the name modal stays
+/// out of the way. The booking is dropped instead of saved to leave the rest
+/// of the calendar alone.
+async fn booking_with_a_session(client: &Client) -> Result<()> {
+    let (start, end) = (booking_day(20)?, booking_day(21)?);
+
+    pick_days(client, &start, &end).await?;
+    wait_for_modal(client, BOOKING_MODAL, true).await?;
+    assert!(
+        !modal_open(client, LOGIN_MODAL).await?,
+        "the name modal was shown to a user with a valid session"
+    );
+
+    close_modal(client, BOOKING_MODAL).await?;
+    wait_for_modal(client, BOOKING_MODAL, false).await?;
+    wait_for_class(client, &cell(&start), BOOKED_CLASS, false).await?;
+
+    Ok(())
+}
+
+async fn log_in(client: &Client, name: &str) -> Result<()> {
+    fill(client, &format!("{LOGIN_MODAL} input[name='name']"), name).await?;
+    submit(client, LOGIN_MODAL).await?;
+    wait_for_modal(client, LOGIN_MODAL, false).await?;
+    wait_for_text(client, LOGGED_IN_INFO, name).await
+}
+
+async fn log_out(client: &Client, login_label: &str) -> Result<()> {
+    dismiss_popovers(client).await?;
+    click(
+        client,
+        &format!("{LOGGED_IN_INFO} button[hx-post='/logout']"),
+    )
+    .await?;
+    wait_for_text(client, LOGGED_IN_INFO, login_label).await
+}
+
+async fn open_login_modal(client: &Client) -> Result<()> {
+    dismiss_popovers(client).await?;
+    click(client, &format!("{LOGGED_IN_INFO} button")).await?;
+    wait_for_modal(client, LOGIN_MODAL, true).await
+}
+
+async fn pick_days(client: &Client, start: &str, end: &str) -> Result<()> {
+    open_popover(client, start).await?;
+    click(client, &format!("{} button.btn-primary", popover(start))).await?;
+    hover(client, &cell(end)).await?;
+    click(client, &day_button(end)).await
+}
+
+async fn open_popover(client: &Client, day: &str) -> Result<()> {
+    dismiss_popovers(client).await?;
+    click(client, &day_button(day)).await?;
+    wait_for_visible(client, &popover(day)).await
+}
+
+/// A popover left over from a previous day covers the cells below it and would
+/// swallow the next click.
+async fn dismiss_popovers(client: &Client) -> Result<()> {
+    hover(client, "h1").await?;
+    wait_for(
+        client,
+        "the day popovers to hide",
+        "return Array.from(document.querySelectorAll('[x-ref^=\"day-popover-\"]')) \
+             .every(e => getComputedStyle(e).visibility === 'hidden');",
+        vec![],
+    )
+    .await
+}
+
 /// Saving a booking closes the day popover, so it has to be reopened before
 /// its entries can be read.
 async fn single_popover_entry(client: &Client, day: &str) -> Result<String> {
-    click(client, &day_button(day)).await?;
-    wait_for_visible(client, &popover(day)).await?;
+    open_popover(client, day).await?;
     wait_for_count(client, &format!("{} li", popover(day)), 1).await?;
 
     let entries = texts(client, &format!("{} li", popover(day))).await?;
@@ -160,6 +265,14 @@ fn popover(day: &str) -> String {
     format!("[x-ref='day-popover-{day}']")
 }
 
+fn edit_button(day: &str) -> String {
+    format!("{} li button:not([hx-delete])", popover(day))
+}
+
+fn delete_button(day: &str) -> String {
+    format!("{} li button[hx-delete]", popover(day))
+}
+
 fn booking_day(day: i8) -> Result<String> {
     let next_month = jiff::Zoned::now()
         .date()
@@ -179,9 +292,12 @@ fn booking_day(day: i8) -> Result<String> {
 async fn serve() -> Result<SocketAddr> {
     let port = free_port()?;
     let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
+    let signed_cookie_key = vec![0u8; 64];
 
     tokio::spawn(async move {
-        start(MEMORY_DB, addr).await.expect("serving");
+        start(MEMORY_DB, addr, &signed_cookie_key)
+            .await
+            .expect("serving");
     });
 
     Ok(addr)
@@ -325,8 +441,12 @@ async fn fill(client: &Client, selector: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-async fn submit(client: &Client) -> Result<()> {
-    click(client, "dialog form button.btn-primary").await
+async fn submit(client: &Client, modal: &str) -> Result<()> {
+    click(client, &format!("{modal} form button.btn-primary")).await
+}
+
+async fn close_modal(client: &Client, modal: &str) -> Result<()> {
+    click(client, &format!("{modal} button[aria-label]")).await
 }
 
 async fn value(client: &Client, selector: &str) -> Result<String> {
@@ -358,7 +478,10 @@ async fn watch_requests(client: &Client) -> Result<()> {
     eval(
         client,
         "window.sawRequest = false; \
-         document.body.addEventListener('htmx:beforeRequest', () => { window.sawRequest = true; });",
+         if (!window.watchingRequests) { \
+             window.watchingRequests = true; \
+             document.body.addEventListener('htmx:beforeRequest', () => { window.sawRequest = true; }); \
+         }",
         vec![],
     )
     .await?;
@@ -382,12 +505,24 @@ async fn texts(client: &Client, selector: &str) -> Result<Vec<String>> {
     serde_json::from_value(texts).with_context(|| format!("reading the text of {selector}"))
 }
 
-async fn wait_for_modal(client: &Client, open: bool) -> Result<()> {
+async fn modal_open(client: &Client, modal: &str) -> Result<bool> {
+    eval(
+        client,
+        "return document.querySelector(arguments[0]).open;",
+        vec![json!(modal)],
+    )
+    .await?
+    .as_bool()
+    .with_context(|| format!("the open state of {modal} is not a boolean"))
+}
+
+async fn wait_for_modal(client: &Client, modal: &str, open: bool) -> Result<()> {
     wait_for(
         client,
-        &format!("the booking modal to be {}", state(open, "open", "closed")),
-        "return document.querySelector('dialog').open === arguments[0];",
-        vec![json!(open)],
+        &format!("{modal} to be {}", state(open, "open", "closed")),
+        "const e = document.querySelector(arguments[0]); \
+         return !!e && e.open === arguments[1];",
+        vec![json!(modal), json!(open)],
     )
     .await
 }
@@ -423,6 +558,28 @@ async fn wait_for_count(client: &Client, selector: &str, count: usize) -> Result
         &format!("{count} element(s) matching {selector}"),
         "return document.querySelectorAll(arguments[0]).length === arguments[1];",
         vec![json!(selector), json!(count)],
+    )
+    .await
+}
+
+async fn wait_for_displayed_count(client: &Client, selector: &str, count: usize) -> Result<()> {
+    wait_for(
+        client,
+        &format!("{count} displayed element(s) matching {selector}"),
+        "return Array.from(document.querySelectorAll(arguments[0])) \
+             .filter(e => getComputedStyle(e).display !== 'none').length === arguments[1];",
+        vec![json!(selector), json!(count)],
+    )
+    .await
+}
+
+async fn wait_for_text(client: &Client, selector: &str, text: &str) -> Result<()> {
+    wait_for(
+        client,
+        &format!("{selector} to contain {text}"),
+        "const e = document.querySelector(arguments[0]); \
+         return !!e && e.textContent.includes(arguments[1]);",
+        vec![json!(selector), json!(text)],
     )
     .await
 }
