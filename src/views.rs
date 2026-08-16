@@ -5,21 +5,44 @@ use icu::calendar::{Date as IcuDate, Iso};
 use icu::datetime::DateTimeFormatter;
 use icu::datetime::fieldsets::{M, MD};
 use icu::locale::locale;
+use jiff::Zoned;
 use jiff::civil::date;
+use jiff::tz::TimeZone;
 use jiff_icu::ConvertInto;
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use serde::Serialize;
 
-use crate::bookings::{BookingId, Person, PersonId};
+use crate::bookings::{Booking, BookingLogEntry, BookingLogEntryPayload, Person, PersonId};
 use crate::strings::Locale;
 
 const APP_TITLE: &str = "Bouc 🐏";
 pub const LOGGED_IN_INFO_ELEMENT_ID: &str = "logged-in-info";
 
+struct SwitcherButtonOpts {
+    href: &'static str,
+    label: &'static str,
+    active: bool,
+}
+
+fn switcher_button(opts: &SwitcherButtonOpts) -> Markup {
+    html! {
+        a
+          .py-1 .px-2 .border .rounded-full .border-transparent .border-gray-200[opts.active] .bg-white[opts.active] href=(opts.href)
+        { (opts.label) }
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub enum ActivePage {
+    Calendar,
+    Log,
+}
+
 pub struct LayoutOpts<'a> {
     locale: Locale,
     people: &'a HashMap<PersonId, Person>,
     user_id: Option<PersonId>,
+    active_page: ActivePage,
 }
 
 pub fn layout(opts: &LayoutOpts, children: Markup) -> Markup {
@@ -47,10 +70,14 @@ pub fn layout(opts: &LayoutOpts, children: Markup) -> Markup {
               x-on:user-logged-out="onUserLoggedOut()"
               .grid .grid-flow-row .px-4 .py-2 .justify-center
             {
-                h1 .text-xl .text-center .mb-2 { (APP_TITLE) }
+                h1 .text-xl .text-center ."max-[640px]:text-left" .mb-2 { (APP_TITLE) }
                 div
-                  .fixed .top-2 .right-2
+                  .fixed .top-2 .right-2 .flex .flex-row .items-center .gap-4
                 {
+                    div .flex .flex-row .items-center .bg-gray-300 ."py-0.5" ."px-0.5" .rounded-full {
+                        (switcher_button(&SwitcherButtonOpts { href: "/", label: "🗓️ Calendar", active: opts.active_page == ActivePage::Calendar }))
+                        (switcher_button(&SwitcherButtonOpts { href: "/log", label: "📕 Log", active: opts.active_page == ActivePage::Log }))
+                    }
                     (logged_in_info(&LoggedInInfoOpts { id: Some(LOGGED_IN_INFO_ELEMENT_ID.to_string()), hx_swap_oob: false, locale: opts.locale, people: opts.people, user_id: opts.user_id }))
                 }
                 (children)
@@ -89,6 +116,7 @@ pub fn index(opts: IndexOpts) -> Markup {
 
     layout(
         &LayoutOpts {
+            active_page: ActivePage::Calendar,
             locale: opts.locale,
             people: opts.people,
             user_id: opts.user_id,
@@ -206,22 +234,13 @@ static DAY_FORMATTER_EN: LazyLock<DateTimeFormatter<MD>> = LazyLock::new(|| {
         .expect("failed to build English day formatter")
 });
 
-fn day_name(locale: Locale, d: &jiff::civil::Date) -> String {
+fn day_name(locale: Locale, d: &(impl Copy + ConvertInto<IcuDate<Iso>>)) -> String {
     let formatter = match locale {
         Locale::Fr => &DAY_FORMATTER_FR,
         Locale::En => &DAY_FORMATTER_EN,
     };
     let icu_date: IcuDate<Iso> = (*d).convert_into();
     formatter.format(&icu_date).to_string()
-}
-
-#[derive(Debug)]
-pub struct Booking {
-    pub id: BookingId,
-    pub start_date: jiff::civil::Date,
-    pub end_date: jiff::civil::Date,
-    pub guest_count: u32,
-    pub creator_id: PersonId,
 }
 
 pub struct CalendarOpts<'a, 'b> {
@@ -337,6 +356,17 @@ struct JsBooking {
     guest_count: u32,
 }
 
+fn get_person_name(
+    locale: Locale,
+    people: &HashMap<PersonId, Person>,
+    person_id: PersonId,
+) -> &str {
+    people
+        .get(&person_id)
+        .map(|p| p.name.as_str())
+        .unwrap_or(locale.strings().unknown_person)
+}
+
 fn day_popover(
     locale: Locale,
     day: jiff::civil::Date,
@@ -383,7 +413,7 @@ fn day_popover(
                 } @else {
                     ul .grid ."gap-1" {
                         @for b in bookings {
-                            @let creator_name = people.get(&b.creator_id).map(|p| p.name.as_str()).unwrap_or(s.unknown_person);
+                            @let creator_name = get_person_name(locale, people, b.creator_id);
                             @let js_booking = JsBooking {
                                 id: u32::from(b.id).to_string(),
                                 start_day: date_to_yyyymmdd(&b.start_date),
@@ -599,9 +629,8 @@ pub fn logged_in_info(opts: &LoggedInInfoOpts) -> Markup {
         {
             @match opts.user_id {
                 Some(user_id) => {
-                    @let name = opts.people.get(&user_id).map(|p| p.name.as_str()).unwrap_or(s.unknown_person);
                     {
-                        "👤 " (name)
+                        "👤 " (get_person_name(opts.locale, opts.people, user_id))
                         button
                         .grid .place-content-center .size-5 .rounded-full ."hover:bg-red-400"
                         title=(s.profile_disconnect)
@@ -622,4 +651,95 @@ pub fn logged_in_info(opts: &LoggedInInfoOpts) -> Markup {
             }
         }
     }
+}
+
+struct BookingLogItemOpts {
+    date: String,
+    title: String,
+    details: Markup,
+}
+
+impl BookingLogItemOpts {
+    fn format_booking_details(locale: Locale, b: &Booking) -> String {
+        format!(
+            "{} → {}, {}",
+            day_name(locale, &b.start_date),
+            day_name(locale, &b.end_date),
+            locale.strings().guests(b.guest_count)
+        )
+    }
+
+    fn from_booking_log_entry(
+        locale: Locale,
+        tz: TimeZone,
+        people: &HashMap<PersonId, Person>,
+        e: &BookingLogEntry,
+    ) -> Self {
+        let s = locale.strings();
+        let actor_name = get_person_name(locale, people, e.creator_id).to_string();
+        let date = day_name(
+            locale,
+            &<Zoned as Into<jiff::civil::Date>>::into(e.create_time.to_zoned(tz)),
+        );
+
+        match &e.payload {
+            BookingLogEntryPayload::BookingCreated { booking } => Self {
+                date,
+                title: s.log_booking_created_title(&actor_name),
+                details: html! { (Self::format_booking_details(locale, booking)) },
+            },
+            BookingLogEntryPayload::BookingChanged { before, after } => Self {
+                date,
+                title: s.log_booking_changed_title(&actor_name),
+                details: html! {
+                    p { "Before: " (Self::format_booking_details(locale, before)) }
+                    p { "After: " (Self::format_booking_details(locale, after)) }
+                },
+            },
+            BookingLogEntryPayload::BookingDeleted { booking } => Self {
+                date,
+                title: s.log_booking_deleted_title(&actor_name),
+                details: html! { (Self::format_booking_details(locale, booking)) },
+            },
+        }
+    }
+}
+
+fn booking_log_item(opts: &BookingLogItemOpts) -> Markup {
+    html! {
+            div {(&opts.date)}
+            div .border-l-2 .border-l-gray-300 .pl-2 {(&opts.title)}
+            div .col-start-2 .flex .flex-col .border-l-2 .border-l-gray-300 .pl-2 .italic .text-sm .pb-2 {(&opts.details)}
+    }
+}
+
+pub const BOOKING_LOG_ELEMENT_ID: &str = "booking-log";
+
+pub struct BookingLogOpts<'a, 'b> {
+    pub locale: Locale,
+    pub tz: TimeZone,
+    pub people: &'a HashMap<PersonId, Person>,
+    pub user_id: Option<PersonId>,
+    pub log_entries: &'b [BookingLogEntry],
+}
+
+pub fn booking_log(opts: &BookingLogOpts) -> Markup {
+    layout(
+        &LayoutOpts {
+            active_page: ActivePage::Log,
+            locale: opts.locale,
+            people: opts.people,
+            user_id: opts.user_id,
+        },
+        html! {
+            div
+              id=(BOOKING_LOG_ELEMENT_ID)
+              .grid ."grid-cols-[auto_minmax(0,1fr)]" .gap-x-2
+            {
+                @for e in opts.log_entries {
+                    (booking_log_item(&BookingLogItemOpts::from_booking_log_entry(opts.locale, opts.tz.clone(), opts.people, e)))
+                }
+            }
+        },
+    )
 }

@@ -11,11 +11,12 @@ use anyhow::{Context, Result, bail};
 use fantoccini::actions::{InputSource, MouseActions, PointerAction};
 use fantoccini::{Client, ClientBuilder, Locator};
 use hyper_util::client::legacy::connect::HttpConnector;
+use jiff::tz::TimeZone;
 use serde_json::{Value, json};
 
 use bouc::sqlite::MEMORY_DB;
 use bouc::start;
-use bouc::strings::Locale;
+use bouc::strings::{Locale, Strings};
 
 const WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -27,6 +28,14 @@ const FULL_CLASS: &str = "border-b-red-600";
 const BOOKING_MODAL: &str = "dialog:has(form[action='/bookings'])";
 const LOGIN_MODAL: &str = "dialog:has(form[action='/login'])";
 const LOGGED_IN_INFO: &str = "#logged-in-info";
+
+const CALENDARS: &str = "#calendars";
+const BOOKING_LOG: &str = "#booking-log";
+const CALENDAR_LINK: &str = "a[href='/']";
+const LOG_LINK: &str = "a[href='/log']";
+
+/// The page switcher paints the link of the page being shown.
+const ACTIVE_LINK_CLASS: &str = "bg-white";
 
 /// Server-side `max_capacity`, reaching it turns the day cell red.
 const MAX_CAPACITY: u32 = 6;
@@ -167,6 +176,57 @@ async fn scenario(client: &Client, addr: SocketAddr) -> Result<()> {
     }
     wait_for_count(client, &format!("{} li", popover(&start)), 0).await?;
 
+    booking_log(client, s).await?;
+
+    Ok(())
+}
+
+/// The log page lists the three changes made to the booking above, newest
+/// first. Every entry renders as three children of the log grid: the date, the
+/// title and the details.
+async fn booking_log(client: &Client, s: &Strings) -> Result<()> {
+    dismiss_popovers(client).await?;
+    click(client, LOG_LINK).await?;
+
+    wait_for_count(client, &format!("{BOOKING_LOG} > div"), 9).await?;
+    wait_for_class(client, LOG_LINK, ACTIVE_LINK_CLASS, true).await?;
+    wait_for_class(client, CALENDAR_LINK, ACTIVE_LINK_CLASS, false).await?;
+    wait_for_text(client, LOGGED_IN_INFO, "Alice").await?;
+
+    assert_eq!(
+        texts(client, &format!("{BOOKING_LOG} > div:nth-child(3n + 2)")).await?,
+        vec![
+            s.log_booking_deleted_title("Alice"),
+            s.log_booking_changed_title("Alice"),
+            s.log_booking_created_title("Alice"),
+        ]
+    );
+
+    let dates = texts(client, &format!("{BOOKING_LOG} > div:nth-child(3n + 1)")).await?;
+    assert!(
+        dates.iter().all(|d| !d.trim().is_empty()),
+        "a log entry has no date: {dates:?}"
+    );
+
+    let details = texts(client, &format!("{BOOKING_LOG} > div:nth-child(3n)")).await?;
+    let (deleted, changed, created) = (&details[0], &details[1], &details[2]);
+    assert!(
+        deleted.contains(&s.guests(MAX_CAPACITY)),
+        "the deleted booking is missing its guest count: {deleted}"
+    );
+    assert!(
+        changed.contains(&s.guests(3)) && changed.contains(&s.guests(MAX_CAPACITY)),
+        "the changed booking is missing a guest count: {changed}"
+    );
+    assert!(
+        created.contains(&s.guests(3)),
+        "the created booking is missing its guest count: {created}"
+    );
+
+    click(client, CALENDAR_LINK).await?;
+    wait_for_count(client, CALENDARS, 1).await?;
+    wait_for_class(client, CALENDAR_LINK, ACTIVE_LINK_CLASS, true).await?;
+
     Ok(())
 }
 
@@ -295,7 +355,7 @@ async fn serve() -> Result<SocketAddr> {
     let signed_cookie_key = vec![0u8; 64];
 
     tokio::spawn(async move {
-        start(MEMORY_DB, addr, &signed_cookie_key)
+        start(MEMORY_DB, addr, &signed_cookie_key, Some(TimeZone::UTC))
             .await
             .expect("serving");
     });

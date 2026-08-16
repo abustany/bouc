@@ -1,5 +1,6 @@
 use anyhow::Result;
-use jiff::civil::Date;
+use jiff::{Timestamp, civil::Date};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Debug, Clone)]
@@ -8,7 +9,8 @@ pub struct Person {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct PersonId(u32);
 
 impl From<PersonId> for u32 {
@@ -23,7 +25,7 @@ impl PersonId {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Booking {
     pub id: BookingId,
     pub start_date: Date,
@@ -32,7 +34,8 @@ pub struct Booking {
     pub guest_count: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct BookingId(u32);
 
 impl From<BookingId> for u32 {
@@ -89,6 +92,37 @@ impl BookingInput {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BookingLogEntryId(u32);
+
+impl From<BookingLogEntryId> for u32 {
+    fn from(id: BookingLogEntryId) -> Self {
+        id.0
+    }
+}
+
+impl BookingLogEntryId {
+    pub fn new(id: u32) -> Self {
+        Self(id)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BookingLogEntry {
+    pub id: BookingLogEntryId,
+    pub creator_id: PersonId,
+    pub create_time: Timestamp,
+    pub payload: BookingLogEntryPayload,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum BookingLogEntryPayload {
+    BookingCreated { booking: Booking },
+    BookingChanged { before: Booking, after: Booking },
+    BookingDeleted { booking: Booking },
+}
+
 #[async_trait::async_trait]
 pub trait Repository: Send + Sync {
     /// Persist a person identified by their name.
@@ -97,23 +131,34 @@ pub trait Repository: Send + Sync {
     /// List every person, ordered by name.
     async fn list_people(&self) -> Result<Vec<Person>>;
 
-    /// Create a new booking (`id` is `None`) or update an existing one (`id`
-    /// is `Some`). Returns the persisted booking.
-    async fn save_booking(
-        &self,
-        id: Option<BookingId>,
-        booking: &BookingInput,
-    ) -> Result<Booking, SaveBookingError>;
+    /// Saves a new booking + a log entry.
+    async fn create_booking(&self, booking: &BookingInput) -> Result<Booking>;
 
+    /// Updates an existing booking + adds a log entry.
+    async fn update_booking(
+        &self,
+        id: BookingId,
+        creator_id: PersonId,
+        booking: &BookingInput,
+    ) -> Result<Booking, UpdateBookingError>;
+
+    /// List all bookings after a given date.
     async fn list_bookings(&self, after: Date) -> Result<Vec<Booking>>;
 
     /// Delete a booking, doing nothing if no booking has that id.
     async fn delete_booking(&self, id: BookingId, creator_id: PersonId) -> Result<()>;
+
+    /// Load one page of booking log entries, newest first. Pass the id of the
+    /// last entry of the previous page as `before` to get the next one.
+    async fn list_booking_log(
+        &self,
+        before: Option<BookingLogEntryId>,
+    ) -> Result<Vec<BookingLogEntry>>;
 }
 
 #[derive(Debug, Error)]
-pub enum SaveBookingError {
-    /// No booking exists with the id targeted by an update.
+pub enum UpdateBookingError {
+    /// No booking has that id, or it was created by somebody else.
     #[error("booking not found")]
     NotFound,
     /// The underlying storage failed.

@@ -5,8 +5,15 @@ CREATE TABLE people (
 
 CREATE TABLE bookings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  start_date VARCHAR(8) NOT NULL,
-  end_date VARCHAR(8) NOT NULL,
+  start_date TEXT NOT NULL, -- YYYYMMDD
+  end_date TEXT NOT NULL, -- YYYYMMDD
   creator_id INTEGER NOT NULL REFERENCES people(id),
   guest_count INTEGER NOT NULL
-);
+) strict;
+
+CREATE TABLE bookings_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  creator_id INTEGER NOT NULL REFERENCES people(id),
+  create_time TEXT NOT NULL, -- ISO8601
+  payload TEXT NOT NULL -- JSON
+) strict;

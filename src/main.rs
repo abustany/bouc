@@ -26,7 +26,7 @@ async fn main() -> anyhow::Result<()> {
         .decode(&args.signed_cookies_key)
         .context("decoding cookie signing key")?;
 
-    start(&args.db, &args.listen, &signed_cookie_key)
+    start(&args.db, &args.listen, &signed_cookie_key, None)
         .await
         .context("starting app")?;
     Ok(())

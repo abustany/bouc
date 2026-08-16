@@ -80,6 +80,9 @@ pub struct Strings {
     pub name_modal_save: &'static str,
     pub profile_login: &'static str,
     pub profile_disconnect: &'static str,
+    pub log_booking_created_title_suffix: &'static str,
+    pub log_booking_changed_title_suffix: &'static str,
+    pub log_booking_deleted_title_suffix: &'static str,
 }
 
 impl Strings {
@@ -90,6 +93,18 @@ impl Strings {
             self.guest_one
         };
         format!("{count} {unit}")
+    }
+
+    pub fn log_booking_created_title(&self, actor_name: &str) -> String {
+        format!("{actor_name} {}", self.log_booking_created_title_suffix)
+    }
+
+    pub fn log_booking_changed_title(&self, actor_name: &str) -> String {
+        format!("{actor_name} {}", self.log_booking_changed_title_suffix)
+    }
+
+    pub fn log_booking_deleted_title(&self, actor_name: &str) -> String {
+        format!("{actor_name} {}", self.log_booking_deleted_title_suffix)
     }
 }
 
@@ -122,6 +137,9 @@ static FR: Strings = Strings {
     name_modal_save: "Enregistrer",
     profile_login: "S'identifier",
     profile_disconnect: "Se déconnecter",
+    log_booking_created_title_suffix: "a ajouté une réservation",
+    log_booking_changed_title_suffix: "a modifié une réservation",
+    log_booking_deleted_title_suffix: "a supprimé une réservation",
 };
 
 static EN: Strings = Strings {
@@ -153,6 +171,9 @@ static EN: Strings = Strings {
     name_modal_save: "Save",
     profile_login: "Login",
     profile_disconnect: "Disconnect",
+    log_booking_created_title_suffix: "added a booking",
+    log_booking_changed_title_suffix: "changed a booking",
+    log_booking_deleted_title_suffix: "deleted a booking",
 };
 
 #[cfg(test)]

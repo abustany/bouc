@@ -14,12 +14,13 @@ use axum::{
 };
 use axum_extra::extract::SignedCookieJar;
 use axum_extra::extract::cookie::{Cookie, Key};
+use jiff::tz::TimeZone;
 use maud::Markup;
 use rust_embed::RustEmbed;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::bookings::{self, BookingId, BookingInput, Person, PersonId};
+use crate::bookings::{self, Booking, BookingId, BookingInput, Person, PersonId};
 use crate::bookings::{Repository, validate_person_name};
 use crate::strings::Locale;
 use crate::views::{self, CALENDARS_ELEMENT_ID};
@@ -27,6 +28,7 @@ use crate::views::{self, CALENDARS_ELEMENT_ID};
 struct InnerAppState {
     repo: Box<dyn Repository>,
     signed_cookies_key: Key,
+    timezone: TimeZone,
 }
 
 #[derive(Clone)]
@@ -52,13 +54,18 @@ const HX_TRIGGER: &str = "hx-trigger";
 #[folder = "assets/"]
 struct Assets;
 
-pub fn router(repo: impl Repository + 'static, signed_cookies_key: Key) -> Router {
+pub fn router(
+    repo: impl Repository + 'static,
+    signed_cookies_key: Key,
+    timezone: TimeZone,
+) -> Router {
     Router::new()
         // start of app routes
         .route("/", get(index))
+        .route("/log", get(booking_log))
         .route("/login", post(login))
         .route("/logout", post(logout))
-        .route("/bookings", post(create_booking))
+        .route("/bookings", post(save_booking))
         .route("/bookings/{id}", delete(delete_booking))
         // end of app routes, any route *after* the route_layer call below does
         // not get the Vary header properly set to accept-language.
@@ -67,6 +74,7 @@ pub fn router(repo: impl Repository + 'static, signed_cookies_key: Key) -> Route
         .with_state(AppState(Arc::new(InnerAppState {
             repo: Box::new(repo),
             signed_cookies_key,
+            timezone,
         })))
 }
 
@@ -131,34 +139,10 @@ impl<S: Send + Sync> FromRequestParts<S> for Locale {
     }
 }
 
-async fn list_bookings(
-    repo: &dyn Repository,
-    now: &jiff::Zoned,
-) -> anyhow::Result<Vec<views::Booking>> {
-    Ok(repo
-        .list_bookings(jiff::civil::date(now.year(), now.month(), 1))
+async fn list_bookings(repo: &dyn Repository, now: &jiff::Zoned) -> anyhow::Result<Vec<Booking>> {
+    repo.list_bookings(jiff::civil::date(now.year(), now.month(), 1))
         .await
-        .context("listing bookings")?
-        .iter()
-        .map(
-            |bookings::Booking {
-                 id,
-                 start_date,
-                 end_date,
-                 guest_count,
-                 creator_id,
-                 ..
-             }| {
-                views::Booking {
-                    id: *id,
-                    start_date: *start_date,
-                    end_date: *end_date,
-                    guest_count: *guest_count,
-                    creator_id: *creator_id,
-                }
-            },
-        )
-        .collect::<Vec<_>>())
+        .context("listing bookings")
 }
 
 async fn list_people(
@@ -195,6 +179,25 @@ async fn index(
         max_capacity: 6,
         people: &list_people(&*app.repo).await.context("listing people")?,
         user_id: get_current_user_id(&jar),
+    }))
+}
+
+async fn booking_log(
+    State(app): State<AppState>,
+    jar: SignedCookieJar,
+    locale: Locale,
+) -> Result<Markup, AppError> {
+    Ok(views::booking_log(&views::BookingLogOpts {
+        locale,
+        tz: app.timezone.clone(),
+        people: &list_people(&*app.repo).await.context("listing people")?,
+        user_id: get_current_user_id(&jar),
+        log_entries: app
+            .repo
+            .list_booking_log(None)
+            .await
+            .context("loading booking log")?
+            .as_slice(),
     }))
 }
 
@@ -284,19 +287,19 @@ async fn oob_logged_in_info(
 }
 
 #[derive(Deserialize)]
-struct CreateBookingForm {
+struct SaveBookingForm {
     id: Option<String>,
     start_date: String,
     end_date: String,
     guest_count: String,
 }
 
-async fn create_booking(
+async fn save_booking(
     State(app): State<AppState>,
     jar: SignedCookieJar,
     headers: HeaderMap,
     locale: Locale,
-    Form(form): Form<CreateBookingForm>,
+    Form(form): Form<SaveBookingForm>,
 ) -> Result<Response, AppError> {
     let Some(creator_id) = get_current_user_id(&jar) else {
         return Ok((StatusCode::UNAUTHORIZED, "unauthorized").into_response());
@@ -329,10 +332,21 @@ async fn create_booking(
         None
     };
 
-    app.repo
-        .save_booking(booking_id, &booking)
-        .await
-        .context("saving booking")?;
+    match booking_id {
+        Some(id) => match app.repo.update_booking(id, creator_id, &booking).await {
+            Ok(_) => {}
+            Err(bookings::UpdateBookingError::NotFound) => {
+                return Ok((StatusCode::NOT_FOUND, "booking not found").into_response());
+            }
+            Err(e) => return Err(AppError::from(e)),
+        },
+        None => {
+            app.repo
+                .create_booking(&booking)
+                .await
+                .context("creating booking")?;
+        }
+    }
 
     if is_htmx(&headers) {
         let calendars = oob_calendars(&*app.repo, locale).await?;
