@@ -389,7 +389,7 @@ fn day_popover(
           .fixed
           ."z-[1000]"
           ."w-max"
-          ."max-w-[30rem]"
+          ."max-w-[min(90vw,30rem)]"
           ."py-1"
           {
             div
