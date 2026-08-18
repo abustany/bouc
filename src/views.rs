@@ -15,7 +15,6 @@ use serde::Serialize;
 use crate::bookings::{Booking, BookingLogEntry, BookingLogEntryPayload, Person, PersonId};
 use crate::strings::Locale;
 
-const APP_TITLE: &str = "Bouc 🐏";
 pub const LOGGED_IN_INFO_ELEMENT_ID: &str = "logged-in-info";
 
 struct SwitcherButtonOpts {
@@ -58,7 +57,7 @@ pub fn layout(opts: &LayoutOpts, children: Markup) -> Markup {
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
-                title { (APP_TITLE) }
+                title { "Bouc 🐏" }
                 link rel="stylesheet" href="/assets/styles.css";
                 script src="/assets/vendor/htmx-2.0.10.min.js" defer {};
                 script src="/assets/index.js" defer {};
@@ -68,17 +67,22 @@ pub fn layout(opts: &LayoutOpts, children: Markup) -> Markup {
               x-data={"app(" (user_id_js_str) ")"}
               x-on:user-logged-in="onUserLoggedIn($event.detail.userId)"
               x-on:user-logged-out="onUserLoggedOut()"
-              .grid .grid-cols-1 .px-4 .py-2
+              .grid .grid-cols-1 .px-4 .py-2 .mt-14
             {
-                h1 .text-xl .text-center ."max-[640px]:text-left" .mb-2 { (APP_TITLE) }
-                div
-                  .fixed .top-2 .right-2 .flex .flex-row .items-center .gap-4
+                header
+                  .fixed .top-0 .inset-x-0 .bg-white .shadow-lg
+                  .grid ."grid-cols-[minmax(auto,1fr)_auto]" .gap-2 .items-center .py-1 .px-2
                 {
-                    div .flex .flex-row .items-center .bg-gray-300 ."py-0.5" ."px-0.5" .rounded-full {
-                        (switcher_button(&SwitcherButtonOpts { href: "/", label: "🗓️ Calendar", active: opts.active_page == ActivePage::Calendar }))
-                        (switcher_button(&SwitcherButtonOpts { href: "/log", label: "📕 Log", active: opts.active_page == ActivePage::Log }))
+                    h1 .text-xl .text-center .flex .flex-row .gap-1 { span .hidden .md:block { "Bouc" } span { "🐏" } }
+                    div
+                      .grid .grid-flow-col .items-center .gap-2 .lg:gap-4
+                    {
+                        div .grid .grid-flow-col .items-center .bg-gray-300 ."py-0.5" ."px-0.5" .rounded-full {
+                            (switcher_button(&SwitcherButtonOpts { href: "/", label: "🗓️ Calendar", active: opts.active_page == ActivePage::Calendar }))
+                            (switcher_button(&SwitcherButtonOpts { href: "/log", label: "📕 Log", active: opts.active_page == ActivePage::Log }))
+                        }
+                        (logged_in_info(&LoggedInInfoOpts { id: Some(LOGGED_IN_INFO_ELEMENT_ID.to_string()), hx_swap_oob: false, locale: opts.locale, people: opts.people, user_id: opts.user_id }))
                     }
-                    (logged_in_info(&LoggedInInfoOpts { id: Some(LOGGED_IN_INFO_ELEMENT_ID.to_string()), hx_swap_oob: false, locale: opts.locale, people: opts.people, user_id: opts.user_id }))
                 }
                 (children)
             }
@@ -623,14 +627,16 @@ pub fn logged_in_info(opts: &LoggedInInfoOpts) -> Markup {
 
     html! {
         div
-          .flex .flex-row .items-center .gap-1
+          .grid ."grid-cols-[minmax(0,1fr)_auto]" .items-center .gap-1
           id=[opts.id.clone()]
           hx-swap-oob=(opts.hx_swap_oob)
         {
             @match opts.user_id {
                 Some(user_id) => {
+                    @let name = get_person_name(opts.locale, opts.people, user_id);
+
                     {
-                        "👤 " (get_person_name(opts.locale, opts.people, user_id))
+                        span .truncate title=(name) { "👤 " (name) }
                         button
                         .grid .place-content-center .size-5 .rounded-full ."hover:bg-red-400"
                         title=(s.profile_disconnect)

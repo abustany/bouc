@@ -1,8 +1,11 @@
 @import "tailwindcss";
 
-@theme {
+@theme inline {
     --color-border: #ced4da;
     --color-button: #333;
+
+    --breakpoint-md: 400px;
+    --breakpoint-lg: 700px;
 }
 
 @layer base {
