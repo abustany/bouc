@@ -355,7 +355,7 @@ async fn serve() -> Result<SocketAddr> {
     let signed_cookie_key = vec![0u8; 64];
 
     tokio::spawn(async move {
-        start(MEMORY_DB, addr, &signed_cookie_key, Some(TimeZone::UTC))
+        start(MEMORY_DB, addr, &signed_cookie_key, Some(TimeZone::UTC), 6)
             .await
             .expect("serving");
     });

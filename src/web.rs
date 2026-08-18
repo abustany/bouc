@@ -29,6 +29,7 @@ struct InnerAppState {
     repo: Box<dyn Repository>,
     signed_cookies_key: Key,
     timezone: TimeZone,
+    max_capacity: u32,
 }
 
 #[derive(Clone)]
@@ -58,6 +59,7 @@ pub fn router(
     repo: impl Repository + 'static,
     signed_cookies_key: Key,
     timezone: TimeZone,
+    max_capacity: u32,
 ) -> Router {
     Router::new()
         // start of app routes
@@ -75,6 +77,7 @@ pub fn router(
             repo: Box::new(repo),
             signed_cookies_key,
             timezone,
+            max_capacity,
         })))
 }
 
@@ -176,7 +179,7 @@ async fn index(
         sorted_bookings: &list_bookings(&*app.repo, &now)
             .await
             .context("listing bookings")?,
-        max_capacity: 6,
+        max_capacity: app.max_capacity,
         people: &list_people(&*app.repo).await.context("listing people")?,
         user_id: get_current_user_id(&jar),
     }))

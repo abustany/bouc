@@ -18,6 +18,7 @@ pub async fn start<ListenAddr: ToSocketAddrs>(
     listen_address: ListenAddr,
     signed_cookie_key: &[u8],
     timezone: Option<TimeZone>,
+    max_capacity: u32,
 ) -> anyhow::Result<()> {
     let signed_cookies_key =
         Key::try_from(signed_cookie_key).context("validating cookie signing key")?;
@@ -30,6 +31,7 @@ pub async fn start<ListenAddr: ToSocketAddrs>(
         repo,
         signed_cookies_key,
         timezone.unwrap_or_else(TimeZone::system),
+        max_capacity,
     );
     let listener = tokio::net::TcpListener::bind(listen_address)
         .await
