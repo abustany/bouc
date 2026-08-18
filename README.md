@@ -7,5 +7,5 @@ calendar.
 
 ## Major features NOT included
 
-Anyone can access the page. Use a reverse proxy if you need stricter access
-control. Any user can edit or delete any user's bookings.
+Anyone can access the page. Users identify using their name only. Use a reverse
+proxy if you need stricter access control.
