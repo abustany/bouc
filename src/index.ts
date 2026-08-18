@@ -162,7 +162,9 @@ const CalendarComponent: () => AlpineComponent<CalendarComponentData> = () => ({
       this.state.hoveredDay = day;
       this.state.popoverDay = day;
     } else if (this.state.kind === "pickingDays") {
-      this.state.booking.endDay = day;
+      if (day >= this.state.booking.startDay) {
+        this.state.booking.endDay = day;
+      }
     }
   },
 
