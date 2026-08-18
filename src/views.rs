@@ -254,25 +254,6 @@ pub struct CalendarOpts<'a, 'b> {
     pub people: &'b HashMap<PersonId, Person>,
 }
 
-fn is_date_in_month(d: &jiff::civil::Date, year: i16, month: i8) -> bool {
-    d.year() == year && d.month() == month
-}
-
-fn is_booking_in_month(b: &Booking, year: i16, month: i8) -> bool {
-    is_date_in_month(&b.start_date, year, month) || is_date_in_month(&b.end_date, year, month)
-}
-
-fn filter_month_bookings<'a>(
-    sorted_bookings: impl IntoIterator<Item = &'a Booking>,
-    year: i16,
-    month: i8,
-) -> impl Iterator<Item = &'a Booking> {
-    sorted_bookings
-        .into_iter()
-        .skip_while(move |b| !is_booking_in_month(b, year, month))
-        .take_while(move |b| is_booking_in_month(b, year, month))
-}
-
 struct CalendarDay<'a, 'b> {
     day: i8,
     guest_count: u32,
@@ -280,18 +261,28 @@ struct CalendarDay<'a, 'b> {
     people: &'b HashMap<PersonId, Person>,
 }
 
-fn calendar(opts: &CalendarOpts) -> Markup {
-    let first_month_day = date(opts.year, opts.month, 1);
+/// Bookings must be sorted by start date: the iteration stops at the first
+/// booking starting after the month.
+fn month_days<'a, 'b>(
+    sorted_bookings: &'a [Booking],
+    people: &'b HashMap<PersonId, Person>,
+    first_month_day: jiff::civil::Date,
+) -> Vec<CalendarDay<'a, 'b>> {
     let last_month_day = first_month_day.last_of_month();
     let mut days = (1..=first_month_day.days_in_month())
         .map(|day| CalendarDay {
             day,
             guest_count: 0,
             bookings: Vec::new(),
-            people: opts.people,
+            people,
         })
         .collect::<Vec<_>>();
-    for b in filter_month_bookings(opts.sorted_bookings, opts.year, opts.month) {
+
+    for b in sorted_bookings
+        .iter()
+        .take_while(|b| b.start_date <= last_month_day)
+        .filter(|b| b.end_date >= first_month_day)
+    {
         let start_in_month = std::cmp::max(b.start_date, first_month_day);
         let end_in_month = std::cmp::min(b.end_date, last_month_day);
 
@@ -301,6 +292,13 @@ fn calendar(opts: &CalendarOpts) -> Markup {
             days[day_index].bookings.push(b);
         }
     }
+
+    days
+}
+
+fn calendar(opts: &CalendarOpts) -> Markup {
+    let first_month_day = date(opts.year, opts.month, 1);
+    let days = month_days(opts.sorted_bookings, opts.people, first_month_day);
 
     html! {
         div .grid .grid-flow-row .content-start {
@@ -744,4 +742,82 @@ pub fn booking_log(opts: &BookingLogOpts) -> Markup {
             }
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bookings::BookingId;
+
+    fn booking(id: u32, start: jiff::civil::Date, end: jiff::civil::Date, guests: u32) -> Booking {
+        Booking {
+            id: BookingId::new(id),
+            start_date: start,
+            end_date: end,
+            creator_id: PersonId::new(1),
+            guest_count: guests,
+        }
+    }
+
+    fn guest_counts(bookings: &[Booking], year: i16, month: i8) -> Vec<u32> {
+        let people = HashMap::new();
+        month_days(bookings, &people, date(year, month, 1))
+            .iter()
+            .map(|d| d.guest_count)
+            .collect()
+    }
+
+    #[test]
+    fn booking_spanning_a_whole_month_fills_every_day() {
+        let bookings = [booking(1, date(2026, 9, 10), date(2026, 11, 10), 2)];
+
+        assert_eq!(guest_counts(&bookings, 2026, 10), vec![2; 31]);
+        assert_eq!(guest_counts(&bookings, 2026, 9)[7..11], [0, 0, 2, 2]);
+        assert_eq!(guest_counts(&bookings, 2026, 11)[9..12], [2, 0, 0]);
+    }
+
+    #[test]
+    fn bookings_outside_the_month_are_ignored() {
+        let bookings = [
+            booking(1, date(2026, 8, 1), date(2026, 8, 31), 3),
+            booking(2, date(2026, 11, 1), date(2026, 11, 2), 3),
+        ];
+
+        assert_eq!(guest_counts(&bookings, 2026, 10), vec![0; 31]);
+    }
+
+    #[test]
+    fn bookings_touching_the_month_edges_are_included() {
+        let bookings = [
+            booking(1, date(2026, 9, 28), date(2026, 10, 1), 1),
+            booking(2, date(2026, 10, 31), date(2026, 11, 2), 3),
+        ];
+
+        let counts = guest_counts(&bookings, 2026, 10);
+        assert_eq!(counts[..2], [1, 0]);
+        assert_eq!(counts[29..], [0, 3]);
+    }
+
+    #[test]
+    fn a_gap_in_the_sorted_bookings_does_not_hide_later_ones() {
+        let bookings = [
+            booking(1, date(2026, 9, 1), date(2026, 10, 3), 1),
+            booking(2, date(2026, 9, 2), date(2026, 9, 3), 1),
+            booking(3, date(2026, 10, 5), date(2026, 10, 6), 4),
+        ];
+
+        let counts = guest_counts(&bookings, 2026, 10);
+        assert_eq!(counts[..3], [1, 1, 1]);
+        assert_eq!(counts[3..6], [0, 4, 4]);
+    }
+
+    #[test]
+    fn overlapping_bookings_add_up() {
+        let bookings = [
+            booking(1, date(2026, 10, 1), date(2026, 10, 3), 2),
+            booking(2, date(2026, 10, 3), date(2026, 10, 4), 5),
+        ];
+
+        assert_eq!(guest_counts(&bookings, 2026, 10)[..5], [2, 2, 7, 5, 0]);
+    }
 }
