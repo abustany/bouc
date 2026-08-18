@@ -68,7 +68,7 @@ pub fn layout(opts: &LayoutOpts, children: Markup) -> Markup {
               x-data={"app(" (user_id_js_str) ")"}
               x-on:user-logged-in="onUserLoggedIn($event.detail.userId)"
               x-on:user-logged-out="onUserLoggedOut()"
-              .grid .grid-flow-row .px-4 .py-2 .justify-center
+              .grid .grid-cols-1 .px-4 .py-2
             {
                 h1 .text-xl .text-center ."max-[640px]:text-left" .mb-2 { (APP_TITLE) }
                 div
@@ -181,11 +181,13 @@ pub fn calendars(opts: &CalendarsOpts) -> Markup {
           id=[opts.id.clone()]
           hx-swap-oob=(opts.hx_swap_oob)
           .grid
-          .grid-cols-3
-          ."max-[909px]:grid-cols-2"
-          ."max-[609px]:grid-cols-1"
+          // a month is 7 day cells of 2.5rem, the max width fits 3 of them
+          // plus their gaps and stops the grid from growing a 4th column
+          ."grid-cols-[repeat(auto-fit,17.5rem)]"
+          ."max-w-[54.5rem]"
+          .mx-auto
+          .justify-center
           .gap-4
-          .justify-items-center
         {
             @for (year, month) in cals {
                 (calendar(&CalendarOpts {
@@ -734,7 +736,7 @@ pub fn booking_log(opts: &BookingLogOpts) -> Markup {
         html! {
             div
               id=(BOOKING_LOG_ELEMENT_ID)
-              .grid ."grid-cols-[auto_minmax(0,1fr)]" .gap-x-2
+              .grid ."grid-cols-[auto_minmax(0,1fr)]" .gap-x-2 .w-max .mx-auto
             {
                 @for e in opts.log_entries {
                     (booking_log_item(&BookingLogItemOpts::from_booking_log_entry(opts.locale, opts.tz.clone(), opts.people, e)))
