@@ -17,13 +17,13 @@ use crate::strings::Locale;
 
 pub const LOGGED_IN_INFO_ELEMENT_ID: &str = "logged-in-info";
 
-struct SwitcherButtonOpts {
-    href: &'static str,
-    label: &'static str,
+struct SwitcherButtonOpts<'a, 'b> {
+    href: &'a str,
+    label: &'b str,
     active: bool,
 }
 
-fn switcher_button(opts: &SwitcherButtonOpts) -> Markup {
+fn switcher_button(opts: &SwitcherButtonOpts<'_, '_>) -> Markup {
     html! {
         a
           .py-1 .px-2 .border .rounded-full .border-transparent .border-gray-200[opts.active] .bg-white[opts.active] href=(opts.href)
@@ -78,8 +78,8 @@ pub fn layout(opts: &LayoutOpts, children: Markup) -> Markup {
                       .grid .grid-flow-col .items-center .gap-2 .lg:gap-4
                     {
                         div .grid .grid-flow-col .items-center .bg-gray-300 ."py-0.5" ."px-0.5" .rounded-full {
-                            (switcher_button(&SwitcherButtonOpts { href: "/", label: "🗓️ Calendar", active: opts.active_page == ActivePage::Calendar }))
-                            (switcher_button(&SwitcherButtonOpts { href: "/log", label: "📕 Log", active: opts.active_page == ActivePage::Log }))
+                            (switcher_button(&SwitcherButtonOpts { href: "/", label: &format!("🗓️ {}", s.navbar_link_calendar), active: opts.active_page == ActivePage::Calendar }))
+                            (switcher_button(&SwitcherButtonOpts { href: "/log", label: &format!("📕 {}", s.navbar_link_log), active: opts.active_page == ActivePage::Log }))
                         }
                         (logged_in_info(&LoggedInInfoOpts { id: Some(LOGGED_IN_INFO_ELEMENT_ID.to_string()), hx_swap_oob: false, locale: opts.locale, people: opts.people, user_id: opts.user_id }))
                     }

@@ -83,6 +83,8 @@ pub struct Strings {
     pub log_booking_created_title_suffix: &'static str,
     pub log_booking_changed_title_suffix: &'static str,
     pub log_booking_deleted_title_suffix: &'static str,
+    pub navbar_link_calendar: &'static str,
+    pub navbar_link_log: &'static str,
 }
 
 impl Strings {
@@ -140,6 +142,8 @@ static FR: Strings = Strings {
     log_booking_created_title_suffix: "a ajouté une réservation",
     log_booking_changed_title_suffix: "a modifié une réservation",
     log_booking_deleted_title_suffix: "a supprimé une réservation",
+    navbar_link_calendar: "Réservations",
+    navbar_link_log: "Journal",
 };
 
 static EN: Strings = Strings {
@@ -174,6 +178,8 @@ static EN: Strings = Strings {
     log_booking_created_title_suffix: "added a booking",
     log_booking_changed_title_suffix: "changed a booking",
     log_booking_deleted_title_suffix: "deleted a booking",
+    navbar_link_calendar: "Bookings",
+    navbar_link_log: "Log",
 };
 
 #[cfg(test)]
