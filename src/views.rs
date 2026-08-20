@@ -604,7 +604,7 @@ fn booking_modal_contents(locale: Locale) -> Markup {
             label .grid ."grid-cols-[auto_1fr]" .items-center .gap-1 {
                 (s.booking_modal_guest_count)
                 ": "
-                input type="number" name="guest_count" min="1" ":value"="booking?.guestCount" required {}
+                input type="number" inputmode="numeric" name="guest_count" min="1" ":value"="booking?.guestCount" required {}
             }
             input type="hidden" name="id" ":value"="booking?.id" {}
             input type="hidden" name="start_date" ":value"="booking?.startDay" {}
