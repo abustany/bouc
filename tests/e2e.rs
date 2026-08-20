@@ -33,6 +33,7 @@ const CALENDARS: &str = "#calendars";
 const BOOKING_LOG: &str = "#booking-log";
 const CALENDAR_LINK: &str = "a[href='/']";
 const LOG_LINK: &str = "a[href='/log']";
+const VISIBLE_POPOVER_CLOSE: &str = "[x-ref^='day-popover-'].visible button[aria-label]";
 
 /// The page switcher paints the link of the page being shown.
 const ACTIVE_LINK_CLASS: &str = "bg-white";
@@ -40,8 +41,97 @@ const ACTIVE_LINK_CLASS: &str = "bg-white";
 /// Server-side `max_capacity`, reaching it turns the day cell red.
 const MAX_CAPACITY: u32 = 6;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BrowserProfile {
+    Desktop,
+    Mobile,
+}
+
+impl BrowserProfile {
+    fn chrome_options(self) -> Value {
+        let mut args = vec![
+            "--headless=new",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--lang=en-US",
+        ];
+
+        match self {
+            Self::Desktop => {
+                args.push("--window-size=1440,900");
+            }
+            Self::Mobile => {
+                args.push("--window-size=390,844");
+            }
+        }
+
+        let mut options = json!({ "args": args });
+        if self == Self::Mobile {
+            options["mobileEmulation"] = json!({
+                "deviceMetrics": {
+                    "width": 390,
+                    "height": 844,
+                    "pixelRatio": 3.0,
+                    "touch": true,
+                    "mobile": true,
+                },
+            });
+        }
+
+        options
+    }
+
+    async fn select_end_day(self, client: &Client, day: &str) -> Result<()> {
+        if self == Self::Desktop {
+            hover(client, &cell(day)).await?;
+        }
+
+        click(client, &day_button(day)).await
+    }
+
+    async fn wait_for_open_popover(self, client: &Client, selector: &str) -> Result<()> {
+        wait_for_visible(client, selector).await?;
+        wait_for_displayed_count(
+            client,
+            &format!("{selector} button[aria-label]"),
+            usize::from(self == Self::Mobile),
+        )
+        .await?;
+        wait_for_animations(client, selector).await
+    }
+
+    async fn dismiss_popovers(self, client: &Client) -> Result<()> {
+        match self {
+            Self::Desktop => hover(client, "h1").await?,
+            Self::Mobile if visible_popover(client).await? => {
+                click(client, VISIBLE_POPOVER_CLOSE).await?;
+            }
+            Self::Mobile => {}
+        }
+
+        wait_for(
+            client,
+            "the day popovers to hide",
+            "return Array.from(document.querySelectorAll('[x-ref^=\"day-popover-\"]')) \
+                 .every(e => getComputedStyle(e).visibility === 'hidden');",
+            vec![],
+        )
+        .await
+    }
+}
+
 #[tokio::test]
-async fn books_edits_and_deletes_a_booking() -> Result<()> {
+async fn books_edits_and_deletes_a_booking_on_desktop() -> Result<()> {
+    run_scenario(BrowserProfile::Desktop).await
+}
+
+#[tokio::test]
+async fn books_edits_and_deletes_a_booking_on_mobile() -> Result<()> {
+    run_scenario(BrowserProfile::Mobile).await
+}
+
+async fn run_scenario(profile: BrowserProfile) -> Result<()> {
     let browser = std::env::var("CHROME_BINARY").ok();
 
     if !chromedriver_available() {
@@ -54,14 +144,16 @@ async fn books_edits_and_deletes_a_booking() -> Result<()> {
 
     let addr = serve().await?;
     let driver = Chromedriver::start().await?;
-    let client = new_client(driver.port, browser.as_deref()).await?;
+    let client = new_client(driver.port, browser.as_deref(), profile).await?;
 
-    let result = scenario(&client, addr).await;
+    let result = scenario(&client, addr, profile)
+        .await
+        .with_context(|| format!("running the {profile:?} scenario"));
     client.close().await.context("closing browser")?;
     result
 }
 
-async fn scenario(client: &Client, addr: SocketAddr) -> Result<()> {
+async fn scenario(client: &Client, addr: SocketAddr, profile: BrowserProfile) -> Result<()> {
     let s = Locale::En.strings();
     let (start, middle, end) = (booking_day(10)?, booking_day(11)?, booking_day(12)?);
     let days = [start.as_str(), middle.as_str(), end.as_str()];
@@ -73,7 +165,7 @@ async fn scenario(client: &Client, addr: SocketAddr) -> Result<()> {
         .await
         .context("loading the index page")?;
 
-    pick_days(client, &start, &end).await?;
+    pick_days(client, &start, &end, profile).await?;
     wait_for_modal(client, LOGIN_MODAL, true).await?;
     assert!(
         !modal_open(client, BOOKING_MODAL).await?,
@@ -111,16 +203,16 @@ async fn scenario(client: &Client, addr: SocketAddr) -> Result<()> {
         wait_for_class(client, &cell(day), FULL_CLASS, false).await?;
     }
 
-    let entry = single_popover_entry(client, &start).await?;
+    let entry = single_popover_entry(client, &start, profile).await?;
     assert!(
         entry.contains("Alice") && entry.contains(&s.guests(3)),
         "unexpected booking entry: {entry}"
     );
 
-    booking_with_a_session(client).await?;
+    booking_with_a_session(client, profile).await?;
 
     // the creator gets the edit and delete buttons
-    open_popover(client, &start).await?;
+    open_popover(client, &start, profile).await?;
     wait_for_displayed_count(client, &edit_button(&start), 1).await?;
     wait_for_displayed_count(client, &delete_button(&start), 1).await?;
 
@@ -140,34 +232,34 @@ async fn scenario(client: &Client, addr: SocketAddr) -> Result<()> {
         wait_for_class(client, &cell(day), FULL_CLASS, true).await?;
     }
 
-    let entry = single_popover_entry(client, &start).await?;
+    let entry = single_popover_entry(client, &start, profile).await?;
     assert!(
         entry.contains(&s.guests(MAX_CAPACITY)),
         "the edited guest count is missing from: {entry}"
     );
 
     // neither a visitor without a session nor another user may touch the booking
-    log_out(client, s.profile_login).await?;
-    open_popover(client, &start).await?;
+    log_out(client, s.profile_login, profile).await?;
+    open_popover(client, &start, profile).await?;
     wait_for_displayed_count(client, &edit_button(&start), 0).await?;
     wait_for_displayed_count(client, &delete_button(&start), 0).await?;
 
-    open_login_modal(client).await?;
+    open_login_modal(client, profile).await?;
     log_in(client, "Bob").await?;
     assert!(
         !modal_open(client, BOOKING_MODAL).await?,
         "logging in from the header opened the booking modal"
     );
 
-    open_popover(client, &start).await?;
+    open_popover(client, &start, profile).await?;
     wait_for_displayed_count(client, &edit_button(&start), 0).await?;
     wait_for_displayed_count(client, &delete_button(&start), 0).await?;
 
-    log_out(client, s.profile_login).await?;
-    open_login_modal(client).await?;
+    log_out(client, s.profile_login, profile).await?;
+    open_login_modal(client, profile).await?;
     log_in(client, "Alice").await?;
 
-    open_popover(client, &start).await?;
+    open_popover(client, &start, profile).await?;
     wait_for_displayed_count(client, &delete_button(&start), 1).await?;
     click(client, &delete_button(&start)).await?;
 
@@ -176,7 +268,7 @@ async fn scenario(client: &Client, addr: SocketAddr) -> Result<()> {
     }
     wait_for_count(client, &format!("{} li", popover(&start)), 0).await?;
 
-    booking_log(client, s).await?;
+    booking_log(client, s, profile).await?;
 
     Ok(())
 }
@@ -184,8 +276,8 @@ async fn scenario(client: &Client, addr: SocketAddr) -> Result<()> {
 /// The log page lists the three changes made to the booking above, newest
 /// first. Every entry renders as three children of the log grid: the date, the
 /// title and the details.
-async fn booking_log(client: &Client, s: &Strings) -> Result<()> {
-    dismiss_popovers(client).await?;
+async fn booking_log(client: &Client, s: &Strings, profile: BrowserProfile) -> Result<()> {
+    profile.dismiss_popovers(client).await?;
     click(client, LOG_LINK).await?;
 
     wait_for_count(client, &format!("{BOOKING_LOG} > div"), 9).await?;
@@ -233,10 +325,10 @@ async fn booking_log(client: &Client, s: &Strings) -> Result<()> {
 /// A logged in user goes straight to the booking form, the name modal stays
 /// out of the way. The booking is dropped instead of saved to leave the rest
 /// of the calendar alone.
-async fn booking_with_a_session(client: &Client) -> Result<()> {
+async fn booking_with_a_session(client: &Client, profile: BrowserProfile) -> Result<()> {
     let (start, end) = (booking_day(20)?, booking_day(21)?);
 
-    pick_days(client, &start, &end).await?;
+    pick_days(client, &start, &end, profile).await?;
     wait_for_modal(client, BOOKING_MODAL, true).await?;
     assert!(
         !modal_open(client, LOGIN_MODAL).await?,
@@ -257,8 +349,8 @@ async fn log_in(client: &Client, name: &str) -> Result<()> {
     wait_for_text(client, LOGGED_IN_INFO, name).await
 }
 
-async fn log_out(client: &Client, login_label: &str) -> Result<()> {
-    dismiss_popovers(client).await?;
+async fn log_out(client: &Client, login_label: &str, profile: BrowserProfile) -> Result<()> {
+    profile.dismiss_popovers(client).await?;
     click(
         client,
         &format!("{LOGGED_IN_INFO} button[hx-post='/logout']"),
@@ -267,43 +359,32 @@ async fn log_out(client: &Client, login_label: &str) -> Result<()> {
     wait_for_text(client, LOGGED_IN_INFO, login_label).await
 }
 
-async fn open_login_modal(client: &Client) -> Result<()> {
-    dismiss_popovers(client).await?;
+async fn open_login_modal(client: &Client, profile: BrowserProfile) -> Result<()> {
+    profile.dismiss_popovers(client).await?;
     click(client, &format!("{LOGGED_IN_INFO} button")).await?;
     wait_for_modal(client, LOGIN_MODAL, true).await
 }
 
-async fn pick_days(client: &Client, start: &str, end: &str) -> Result<()> {
-    open_popover(client, start).await?;
+async fn pick_days(client: &Client, start: &str, end: &str, profile: BrowserProfile) -> Result<()> {
+    open_popover(client, start, profile).await?;
     click(client, &format!("{} button.btn-primary", popover(start))).await?;
-    hover(client, &cell(end)).await?;
-    click(client, &day_button(end)).await
+    profile.select_end_day(client, end).await
 }
 
-async fn open_popover(client: &Client, day: &str) -> Result<()> {
-    dismiss_popovers(client).await?;
+async fn open_popover(client: &Client, day: &str, profile: BrowserProfile) -> Result<()> {
+    profile.dismiss_popovers(client).await?;
     click(client, &day_button(day)).await?;
-    wait_for_visible(client, &popover(day)).await
-}
-
-/// A popover left over from a previous day covers the cells below it and would
-/// swallow the next click.
-async fn dismiss_popovers(client: &Client) -> Result<()> {
-    hover(client, "h1").await?;
-    wait_for(
-        client,
-        "the day popovers to hide",
-        "return Array.from(document.querySelectorAll('[x-ref^=\"day-popover-\"]')) \
-             .every(e => getComputedStyle(e).visibility === 'hidden');",
-        vec![],
-    )
-    .await
+    profile.wait_for_open_popover(client, &popover(day)).await
 }
 
 /// Saving a booking closes the day popover, so it has to be reopened before
 /// its entries can be read.
-async fn single_popover_entry(client: &Client, day: &str) -> Result<String> {
-    open_popover(client, day).await?;
+async fn single_popover_entry(
+    client: &Client,
+    day: &str,
+    profile: BrowserProfile,
+) -> Result<String> {
+    open_popover(client, day, profile).await?;
     wait_for_count(client, &format!("{} li", popover(day)), 1).await?;
 
     let entries = texts(client, &format!("{} li", popover(day))).await?;
@@ -412,20 +493,11 @@ fn free_port() -> Result<u16> {
     Ok(listener.local_addr()?.port())
 }
 
-async fn new_client(port: u16, browser: Option<&str>) -> Result<Client> {
+async fn new_client(port: u16, browser: Option<&str>, profile: BrowserProfile) -> Result<Client> {
     // the nix build sandbox has neither a user namespace nor a large /dev/shm.
-    // The window size keeps the booked month in the first calendar row:
-    // scrolling would move the fixed popovers while chromedriver aims at them.
-    let mut chrome_options = json!({
-        "args": [
-            "--headless=new",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--window-size=1440,900",
-            "--lang=en-US",
-        ],
-    });
+    // The desktop window keeps the booked month in the first calendar row so
+    // scrolling does not move the fixed popovers while chromedriver aims at them.
+    let mut chrome_options = profile.chrome_options();
 
     if let Some(binary) = browser {
         chrome_options["binary"] = json!(binary);
@@ -532,6 +604,17 @@ async fn value_missing(client: &Client, selector: &str) -> Result<bool> {
         .with_context(|| format!("validity of {selector} is not a boolean"))
 }
 
+async fn visible_popover(client: &Client) -> Result<bool> {
+    eval(
+        client,
+        "return document.querySelector('[x-ref^=\"day-popover-\"].visible') !== null;",
+        vec![],
+    )
+    .await?
+    .as_bool()
+    .context("the visible popover state is not a boolean")
+}
+
 /// htmx fires `htmx:beforeRequest` while handling the click, so the flag is
 /// already set by the time a click command returns.
 async fn watch_requests(client: &Client) -> Result<()> {
@@ -593,6 +676,19 @@ async fn wait_for_visible(client: &Client, selector: &str) -> Result<()> {
         &format!("{selector} to become visible"),
         "const e = document.querySelector(arguments[0]); \
          return !!e && getComputedStyle(e).visibility === 'visible';",
+        vec![json!(selector)],
+    )
+    .await
+}
+
+async fn wait_for_animations(client: &Client, selector: &str) -> Result<()> {
+    wait_for(
+        client,
+        &format!("animations on {selector} to settle"),
+        "const e = document.querySelector(arguments[0]); \
+         return !!e && e.getAnimations({ subtree: true }).every(animation => \
+             animation.playState === 'finished' || animation.playState === 'idle' \
+         );",
         vec![json!(selector)],
     )
     .await
