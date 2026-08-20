@@ -538,7 +538,7 @@ struct ModalOpts {
 fn modal(opts: &ModalOpts) -> Markup {
     html! {
         dialog
-          .w-full ."max-w-[600px]" .m-auto ."bg-white" ."px-4" ."py-2" ."rounded-2xl" ."backdrop:bg-black/50"
+          .w-full ."max-w-[min(600px,calc(100vw-1rem))]" .m-auto ."bg-white" ."px-4" ."py-2" ."rounded-2xl" ."backdrop:bg-black/50"
           id=[opts.id.clone()]
           x-ref=[opts.x_ref.clone()]
           x-on:close=[opts.on_close.clone()]
