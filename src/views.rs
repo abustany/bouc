@@ -129,6 +129,7 @@ pub fn index(opts: IndexOpts) -> Markup {
             p .pb-2 .text-center .italic { (opts.locale.strings().index_hint) }
             div
               x-data="calendar"
+              "x-on:keydown.escape.window"="closePopover()"
             {
                 (calendars(&CalendarsOpts {
                     locale: opts.locale,
@@ -386,7 +387,7 @@ fn day_popover(
         // popover so the pointer never leaves the cell on its way here
         div
           x-cloak
-          ":style"={(open_condition) " ? '' : 'visibility:hidden'"}
+          ":class"={"popoverClasses('" (yyyymmdd) "')"}
           x-effect={(open_condition) " && placePopover('" (yyyymmdd) "')"}
           "x-on:scroll.window.passive"={(open_condition) " && placePopover('" (yyyymmdd) "')"}
           x-ref={"day-popover-" (yyyymmdd)}
@@ -395,6 +396,12 @@ fn day_popover(
           ."w-max"
           ."max-w-[min(90vw,30rem)]"
           ."py-1"
+          ."sheet:inset-x-0"
+          ."sheet:top-auto"
+          ."sheet:bottom-0"
+          ."sheet:w-auto"
+          ."sheet:max-w-none"
+          ."sheet:py-0"
           {
             div
               .grid
@@ -409,8 +416,37 @@ fn day_popover(
               .border-border
               ."bg-white"
               ."shadow-lg"
+              ."sheet:text-base"
+              ."sheet:px-4"
+              ."sheet:pt-4"
+              ."sheet:pb-[calc(1rem+env(safe-area-inset-bottom))]"
+              ."sheet:rounded-b-none"
+              ."sheet:rounded-t-2xl"
+              ."sheet:border-x-0"
+              ."sheet:border-b-0"
+              ."sheet:max-h-[70vh]"
+              ."sheet:overflow-y-auto"
             {
-                p .font-semibold .text-center { (day_name(locale, &day)) }
+                // the close button shares its grid cell with the title, which
+                // keeps the title centered on the whole sheet
+                div .grid .items-center {
+                    p .font-semibold .text-center ."col-start-1" ."row-start-1" { (day_name(locale, &day)) }
+
+                    button
+                      .hidden
+                      ."sheet:grid"
+                      ."col-start-1"
+                      ."row-start-1"
+                      .justify-self-end
+                      .place-content-center
+                      .rounded-full
+                      .size-8
+                      ."bg-gray-100"
+                      x-on:click="closePopover()"
+                      aria-label=(s.modal_close)
+                      type="button"
+                    { "×" }
+                }
 
                 @if bookings.is_empty() {
                     p .italic { (s.day_popover_empty) }

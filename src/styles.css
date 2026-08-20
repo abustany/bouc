@@ -8,6 +8,15 @@
     --breakpoint-lg: 700px;
 }
 
+/* Phones, where the day popover becomes a sheet coming from the bottom of the
+   screen. src/index.ts matches this media query to switch the popover
+   behaviour, and has to be kept in sync with it. */
+@custom-variant sheet {
+    @media (width < theme(--breakpoint-md)) and (hover: none) {
+        @slot;
+    }
+}
+
 @layer base {
     input {
         @apply border border-border rounded-xs px-2 py-1;

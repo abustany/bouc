@@ -3,6 +3,14 @@ import type { AlpineComponent } from "../types/alpinejs";
 // Minimum space between the edge of the screen and a popover
 const EDGE = 8;
 
+// Has to be kept in sync with the `sheet` variant in src/styles.css, which
+// turns the popover into a sheet coming from the bottom of the screen
+const SheetMedia = window.matchMedia("(width < 400px) and (hover: none)");
+
+function isSheetMode(): boolean {
+  return SheetMedia.matches;
+}
+
 function place(cell: HTMLElement, popover: HTMLElement): void {
   const anchor = cell.getBoundingClientRect();
   popover.style.top = "0px";
@@ -122,8 +130,12 @@ interface CalendarComponentData {
   onDayMouseEnter(day: string): void;
   onDayMouseLeave(): void;
   onDayClick(day: string): void;
+  instantPopover: boolean;
   shouldShowPopoverForDay(day: string): boolean;
+  popoverClasses(day: string): string;
   placePopover(day: string): void;
+  openPopover(day: string): void;
+  closePopover(): void;
   pendingBookingDayClass(
     day: string,
   ): "booking-start" | "booking-middle" | "booking-end" | "";
@@ -140,6 +152,8 @@ const CalendarComponent: () => AlpineComponent<CalendarComponentData> = () => ({
     hidePopoverTimeout: null,
   },
 
+  instantPopover: false,
+
   init() {
     this.$watch("booking", (b) => {
       if (!b) {
@@ -155,12 +169,10 @@ const CalendarComponent: () => AlpineComponent<CalendarComponentData> = () => ({
 
   onDayMouseEnter(day: string) {
     if (this.state.kind === "init") {
-      if (this.state.hidePopoverTimeout) {
-        clearTimeout(this.state.hidePopoverTimeout);
-      }
+      // sheet opens on click
+      if (!isSheetMode()) this.openPopover(day);
 
       this.state.hoveredDay = day;
-      this.state.popoverDay = day;
     } else if (this.state.kind === "pickingDays") {
       if (day >= this.state.booking.startDay) {
         this.state.booking.endDay = day;
@@ -170,9 +182,10 @@ const CalendarComponent: () => AlpineComponent<CalendarComponentData> = () => ({
 
   onDayMouseLeave() {
     if (this.state.kind === "init") {
-      this.state.hidePopoverTimeout = setTimeout(() => {
-        if (this.state.kind === "init") this.state.popoverDay = null;
-      }, 200);
+      // sheet is closed with the close button
+      if (!isSheetMode()) {
+        this.state.hidePopoverTimeout = setTimeout(() => this.closePopover(), 200);
+      }
 
       this.state.hoveredDay = null;
     }
@@ -180,7 +193,7 @@ const CalendarComponent: () => AlpineComponent<CalendarComponentData> = () => ({
 
   onDayClick(day: string) {
     if (this.state.kind === "init") {
-      this.onDayMouseEnter(day);
+      this.openPopover(day);
     } else if (this.state.kind === "pickingDays") {
       this.state = {
         kind: "completingBooking",
@@ -196,8 +209,56 @@ const CalendarComponent: () => AlpineComponent<CalendarComponentData> = () => ({
     return this.state.kind === "init" && this.state.popoverDay === day;
   },
 
+  popoverClasses(day: string): string {
+    // visibility is part of the transition so the sheet stays on screen while
+    // it slides back out
+    const slide = this.instantPopover
+      ? ""
+      : "sheet:transition-[translate,visibility] sheet:duration-200 ";
+
+    return this.shouldShowPopoverForDay(day)
+      ? `${slide}visible sheet:translate-y-0`
+      : `${slide}invisible sheet:translate-y-full`;
+  },
+
   placePopover(day) {
-    place(this.$refs[`cell-${day}`], this.$refs[`day-popover-${day}`]);
+    const popover = this.$refs[`day-popover-${day}`];
+
+    if (isSheetMode()) {
+      // coordinates left over from a previous placement would win over the
+      // classes pinning the sheet to the bottom of the screen
+      popover.style.top = "";
+      popover.style.left = "";
+      return;
+    }
+
+    place(this.$refs[`cell-${day}`], popover);
+  },
+
+  openPopover(day: string) {
+    if (this.state.kind !== "init") return;
+
+    if (this.state.hidePopoverTimeout) {
+      clearTimeout(this.state.hidePopoverTimeout);
+      this.state.hidePopoverTimeout = null;
+    }
+
+    // one sheet sliding out while another slides in is noise: going straight
+    // from a day to the next swaps them without an animation
+    this.instantPopover = this.state.popoverDay !== null;
+    this.state.popoverDay = day;
+  },
+
+  closePopover() {
+    if (this.state.kind !== "init") return;
+
+    if (this.state.hidePopoverTimeout) {
+      clearTimeout(this.state.hidePopoverTimeout);
+      this.state.hidePopoverTimeout = null;
+    }
+
+    this.instantPopover = false;
+    this.state.popoverDay = null;
   },
 
   pendingBookingDayClass(day) {
