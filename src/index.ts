@@ -131,6 +131,7 @@ interface CalendarComponentData {
   onDayMouseLeave(): void;
   onDayClick(day: string): void;
   instantPopover: boolean;
+  isPickingDays: boolean;
   shouldShowPopoverForDay(day: string): boolean;
   popoverClasses(day: string): string;
   placePopover(day: string): void;
@@ -203,6 +204,10 @@ const CalendarComponent: () => AlpineComponent<CalendarComponentData> = () => ({
       asAppChild(this).currentBooking = this.state.booking;
       asAppChild(this).ensureLoggedIn();
     }
+  },
+
+  get isPickingDays() {
+    return this.state.kind === "pickingDays";
   },
 
   shouldShowPopoverForDay(day: string): boolean {

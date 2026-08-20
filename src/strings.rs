@@ -54,6 +54,9 @@ impl Locale {
 pub struct Strings {
     pub lang: &'static str,
     pub index_hint: &'static str,
+    pub index_hint_touch: &'static str,
+    pub index_hint_end_day: &'static str,
+    pub index_hint_end_day_touch: &'static str,
     pub modal_close: &'static str,
     pub day_popover_empty: &'static str,
     pub day_popover_edit_button_title: &'static str,
@@ -113,6 +116,9 @@ impl Strings {
 static FR: Strings = Strings {
     lang: "fr",
     index_hint: "Pointer sur un jour pour entrer une réservation ou afficher les détails",
+    index_hint_touch: "Toucher un jour pour entrer une réservation ou afficher les détails",
+    index_hint_end_day: "Cliquer sur le dernier jour du séjour",
+    index_hint_end_day_touch: "Toucher le dernier jour du séjour",
     modal_close: "Fermer",
     day_popover_empty: "Aucune réservation",
     day_popover_edit_button_title: "Modifier",
@@ -149,6 +155,9 @@ static FR: Strings = Strings {
 static EN: Strings = Strings {
     lang: "en",
     index_hint: "Hover a day to add a booking or view its details",
+    index_hint_touch: "Tap a day to add a booking or view its details",
+    index_hint_end_day: "Click the last day of your stay",
+    index_hint_end_day_touch: "Tap the last day of your stay",
     modal_close: "Close",
     day_popover_empty: "No bookings",
     day_popover_edit_button_title: "Edit",

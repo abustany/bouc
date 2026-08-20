@@ -126,11 +126,20 @@ pub fn index(opts: IndexOpts) -> Markup {
             user_id: opts.user_id,
         },
         html! {
-            p .pb-2 .text-center .italic { (opts.locale.strings().index_hint) }
             div
               x-data="calendar"
               "x-on:keydown.escape.window"="closePopover()"
             {
+                p .pb-2 .text-center .italic {
+                    span x-show="!isPickingDays" {
+                        (hint(s.index_hint, s.index_hint_touch))
+                    }
+                    span x-cloak x-show="isPickingDays" {
+                        (hint(s.index_hint_end_day, s.index_hint_end_day_touch))
+                    }
+                }
+
+
                 (calendars(&CalendarsOpts {
                     locale: opts.locale,
                     id: Some(CALENDARS_ELEMENT_ID.to_string()),
@@ -154,6 +163,13 @@ pub fn index(opts: IndexOpts) -> Markup {
             }
         },
     )
+}
+
+fn hint(pointer: &str, touch: &str) -> Markup {
+    html! {
+        span ."sheet:hidden" { (pointer) }
+        span .hidden ."sheet:block" { (touch) }
+    }
 }
 
 pub struct CalendarsOpts<'a, 'b> {
