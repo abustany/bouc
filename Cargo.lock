@@ -214,6 +214,7 @@ dependencies = [
  "jiff",
  "jiff-icu",
  "maud",
+ "rand",
  "rust-embed",
  "serde",
  "serde_json",

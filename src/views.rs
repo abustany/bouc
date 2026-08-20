@@ -26,6 +26,7 @@ struct SwitcherButtonOpts<'a, 'b> {
 fn switcher_button(opts: &SwitcherButtonOpts<'_, '_>) -> Markup {
     html! {
         a
+          aria-current=[opts.active.then_some("page")]
           .py-1 .px-2 .border .rounded-full .border-transparent .border-gray-200[opts.active] .bg-white[opts.active] href=(opts.href)
         { (opts.label) }
     }
@@ -200,6 +201,8 @@ pub fn calendars(opts: &CalendarsOpts) -> Markup {
     html! {
         div
           id=[opts.id.clone()]
+          role="region"
+          aria-label="Calendars"
           hx-swap-oob=(opts.hx_swap_oob)
           .grid
           // a month is 7 day cells of 2.5rem, the max width fits 3 of them
@@ -320,16 +323,30 @@ fn month_days<'a, 'b>(
 fn calendar(opts: &CalendarOpts) -> Markup {
     let first_month_day = date(opts.year, opts.month, 1);
     let days = month_days(opts.sorted_bookings, opts.people, first_month_day);
+    let month_name_id = format!("month-name-{}", date_to_yyyymmdd(&first_month_day));
 
     html! {
-        div .grid .grid-flow-row .content-start {
-            p .text-center .font-semibold {(month_name(opts.locale, &first_month_day)) " " (opts.year)}
+        div
+          .grid .grid-flow-row .content-start
+          aria-labelledby=(month_name_id)
+        {
+            p id=(month_name_id) .text-center .font-semibold {(month_name(opts.locale, &first_month_day)) " " (opts.year)}
             div
             .grid ."grid-cols-[repeat(7,2.5rem)]"
             {
                 @for CalendarDay{day, guest_count, bookings, people} in days {
                     @let style = if day == 1 { Some(format!("grid-column-start: {};", first_month_day.weekday().to_monday_one_offset())) } else { None };
-                    @let yyyymmdd = format!("{:04}{:02}{:02}", opts.year, opts.month, day);
+                    @let date = date(opts.year, opts.month, day);
+                    @let yyyymmdd = date_to_yyyymmdd(&date);
+                    @let day_name = day_name(opts.locale, &date);
+                    @let booking_status = if guest_count == 0 {
+                        opts.locale.strings().day_popover_empty.to_owned()
+                    } else if guest_count >= opts.max_capacity {
+                        format!("{}, {}", opts.locale.strings().guests(guest_count), opts.locale.strings().day_at_capacity)
+                    } else {
+                        opts.locale.strings().guests(guest_count)
+                    };
+                    @let day_label = format!("{day_name}: {booking_status}");
                     div
                       .grid
                       ."border-2"
@@ -343,19 +360,22 @@ fn calendar(opts: &CalendarOpts) -> Markup {
                       x-ref={"cell-" (yyyymmdd)}
                     {
 
-                      button
-                        .grid
-                        .place-content-center
-                        ."h-[2.5rem]"
-                        ."w-[2.5rem]"
-                        .rounded-full
-                        ."hover:bg-border"
-                        "x-on:click.self"={"onDayClick('" (yyyymmdd) "')"}
-                        ":class"={"pendingBookingDayClass('" (yyyymmdd) "')"}
-                        type="button"
-                      { (day) }
+                      time datetime=(date.strftime("%F")) {
+                          button
+                            aria-label=(day_label)
+                            .grid
+                            .place-content-center
+                            ."h-[2.5rem]"
+                            ."w-[2.5rem]"
+                            .rounded-full
+                            ."hover:bg-border"
+                            "x-on:click.self"={"onDayClick('" (yyyymmdd) "')"}
+                            ":class"={"pendingBookingDayClass('" (yyyymmdd) "')"}
+                            type="button"
+                          { (day) }
+                      }
 
-                      (day_popover(opts.locale, date(opts.year, opts.month, day), &bookings, people))
+                      (day_popover(opts.locale, date, &bookings, people))
                     }
                 }
             }
@@ -397,11 +417,16 @@ fn day_popover(
     let s = locale.strings();
     let yyyymmdd = date_to_yyyymmdd(&day);
     let open_condition = format!("shouldShowPopoverForDay('{yyyymmdd}')");
+    let display_day = day_name(locale, &day);
+    let title_id = format!("day-popover-title-{yyyymmdd}");
 
     html! {
         // the vertical padding is the visual gap to the day cell, kept inside the
         // popover so the pointer never leaves the cell on its way here
         div
+          role="dialog"
+          aria-labelledby=(title_id)
+          ":aria-hidden"={"(!" (open_condition) ").toString()"}
           x-cloak
           ":class"={"popoverClasses('" (yyyymmdd) "')"}
           x-effect={(open_condition) " && placePopover('" (yyyymmdd) "')"}
@@ -446,7 +471,9 @@ fn day_popover(
                 // the close button shares its grid cell with the title, which
                 // keeps the title centered on the whole sheet
                 div .grid .items-center {
-                    p .font-semibold .text-center ."col-start-1" ."row-start-1" { (day_name(locale, &day)) }
+                    p id=(title_id) .font-semibold .text-center ."col-start-1" ."row-start-1" {
+                        time datetime=(day.strftime("%F")) { (display_day) }
+                    }
 
                     button
                       .hidden
@@ -530,16 +557,17 @@ struct ModalOpts {
     locale: Locale,
     title: Markup,
     children: Markup,
-    id: Option<String>,
     x_ref: Option<String>,
     on_close: Option<String>,
 }
 
 fn modal(opts: &ModalOpts) -> Markup {
+    let title_id = format!("modal-title-{:016x}", rand::random::<u64>());
+
     html! {
         dialog
+          aria-labelledby=(title_id)
           .w-full ."max-w-[min(600px,calc(100vw-1rem))]" .m-auto ."bg-white" ."px-4" ."py-2" ."rounded-2xl" ."backdrop:bg-black/50"
-          id=[opts.id.clone()]
           x-ref=[opts.x_ref.clone()]
           x-on:close=[opts.on_close.clone()]
         {
@@ -547,7 +575,7 @@ fn modal(opts: &ModalOpts) -> Markup {
             // agent's display:none for the closed state
             div .grid .grid-flow-row {
                 div .grid ."grid-cols-[1fr_auto]" .gap-2 .mb-1 {
-                    div .font-semibold { (opts.title) }
+                    div .font-semibold id=(title_id) { (opts.title) }
                     button
                       .grid .place-content-center .rounded-full .size-5 ."hover:bg-red-400"
                       x-on:click="$el.closest('dialog').close()"
@@ -577,7 +605,7 @@ fn booking_modal(opts: &BookingModalOpts) -> Markup {
                 children: booking_modal_contents(opts.locale),
                 x_ref: Some("modal".to_string()),
                 on_close: Some("onModalClose()".to_string()),
-                ..Default::default()
+                locale: opts.locale,
             }))
         }
     }
@@ -634,6 +662,7 @@ fn name_modal(opts: &NameModalOpts) -> Markup {
                 title: html! { (s.name_modal_title) },
                 children: name_modal_contents(opts.locale),
                 x_ref: Some("modal".to_string()),
+                locale: opts.locale,
                 ..Default::default()
             }))
         }
@@ -691,6 +720,7 @@ pub fn logged_in_info(opts: &LoggedInInfoOpts) -> Markup {
                         span .truncate title=(name) { "👤 " (name) }
                         button
                         .grid .place-content-center .size-5 .rounded-full ."hover:bg-red-400"
+                        aria-label=(s.profile_disconnect)
                         title=(s.profile_disconnect)
                         hx-post="/logout"
                         {
@@ -765,13 +795,13 @@ impl BookingLogItemOpts {
 
 fn booking_log_item(opts: &BookingLogItemOpts) -> Markup {
     html! {
-            div {(&opts.date)}
-            div .border-l-2 .border-l-gray-300 .pl-2 {(&opts.title)}
+        article .grid ."grid-cols-[7rem_minmax(0,1fr)]" .gap-x-2 {
+            time .text-right {(&opts.date)}
+            h2 .border-l-2 .border-l-gray-300 .pl-2 {(&opts.title)}
             div .col-start-2 .flex .flex-col .border-l-2 .border-l-gray-300 .pl-2 .italic .text-sm .pb-2 {(&opts.details)}
+        }
     }
 }
-
-pub const BOOKING_LOG_ELEMENT_ID: &str = "booking-log";
 
 pub struct BookingLogOpts<'a, 'b> {
     pub locale: Locale,
@@ -791,8 +821,9 @@ pub fn booking_log(opts: &BookingLogOpts) -> Markup {
         },
         html! {
             div
-              id=(BOOKING_LOG_ELEMENT_ID)
-              .grid ."grid-cols-[auto_minmax(0,1fr)]" .gap-x-2 .w-max .mx-auto
+              role="region"
+              aria-label="Booking log"
+              .flex .flex-col .w-max .mx-auto
             {
                 @for e in opts.log_entries {
                     (booking_log_item(&BookingLogItemOpts::from_booking_log_entry(opts.locale, opts.tz.clone(), opts.people, e)))

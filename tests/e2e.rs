@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use fantoccini::actions::{InputSource, MouseActions, PointerAction};
+use fantoccini::elements::Element;
 use fantoccini::{Client, ClientBuilder, Locator};
 use hyper_util::client::legacy::connect::HttpConnector;
 use jiff::tz::TimeZone;
@@ -21,25 +22,38 @@ use bouc::strings::{Locale, Strings};
 const WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-const BOOKED_CLASS: &str = "border-b-amber-300";
-const FULL_CLASS: &str = "border-b-red-600";
-
-/// The page holds one dialog per modal, told apart by the form they submit.
-const BOOKING_MODAL: &str = "dialog:has(form[action='/bookings'])";
-const LOGIN_MODAL: &str = "dialog:has(form[action='/login'])";
 const LOGGED_IN_INFO: &str = "#logged-in-info";
 
-const CALENDARS: &str = "#calendars";
-const BOOKING_LOG: &str = "#booking-log";
+const BOOKING_LOG: &str = "[role='region'][aria-label='Booking log']";
 const CALENDAR_LINK: &str = "a[href='/']";
 const LOG_LINK: &str = "a[href='/log']";
-const VISIBLE_POPOVER_CLOSE: &str = "[x-ref^='day-popover-'].visible button[aria-label]";
-
-/// The page switcher paints the link of the page being shown.
-const ACTIVE_LINK_CLASS: &str = "bg-white";
+const VISIBLE_POPOVER_CLOSE: &str =
+    "[role='dialog'][aria-hidden='false'] button[aria-label='Close']";
 
 /// Server-side `max_capacity`, reaching it turns the day cell red.
 const MAX_CAPACITY: u32 = 6;
+
+#[derive(Clone, Copy, Debug)]
+enum Modal {
+    Booking,
+    Login,
+}
+
+impl Modal {
+    fn xpath(self) -> &'static str {
+        match self {
+            Self::Booking => {
+                r#"//dialog[@aria-labelledby = .//*[@id and (normalize-space(.) = "New booking" or normalize-space(.) = "Edit booking")]/@id]"#
+            }
+            Self::Login => {
+                r#"//dialog[@aria-labelledby = .//*[@id and normalize-space(.) = "What's your name?"]/@id]"#
+            }
+        }
+    }
+}
+
+const BOOKING_MODAL: Modal = Modal::Booking;
+const LOGIN_MODAL: Modal = Modal::Login;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BrowserProfile {
@@ -84,7 +98,7 @@ impl BrowserProfile {
 
     async fn select_end_day(self, client: &Client, day: &str) -> Result<()> {
         if self == Self::Desktop {
-            hover(client, &cell(day)).await?;
+            hover(client, &day_button(day)).await?;
         }
 
         click(client, &day_button(day)).await
@@ -94,7 +108,7 @@ impl BrowserProfile {
         wait_for_visible(client, selector).await?;
         wait_for_displayed_count(
             client,
-            &format!("{selector} button[aria-label]"),
+            &format!("{selector} button[aria-label='Close']"),
             usize::from(self == Self::Mobile),
         )
         .await?;
@@ -113,8 +127,7 @@ impl BrowserProfile {
         wait_for(
             client,
             "the day popovers to hide",
-            "return Array.from(document.querySelectorAll('[x-ref^=\"day-popover-\"]')) \
-                 .every(e => getComputedStyle(e).visibility === 'hidden');",
+            "return document.querySelector('[role=\"dialog\"][aria-hidden=\"false\"]') === null;",
             vec![],
         )
         .await
@@ -157,8 +170,8 @@ async fn scenario(client: &Client, addr: SocketAddr, profile: BrowserProfile) ->
     let s = Locale::En.strings();
     let (start, middle, end) = (booking_day(10)?, booking_day(11)?, booking_day(12)?);
     let days = [start.as_str(), middle.as_str(), end.as_str()];
-    let name_input = format!("{LOGIN_MODAL} input[name='name']");
-    let guest_count_input = format!("{BOOKING_MODAL} input[name='guest_count']");
+    let name_input = "input[name='name']";
+    let guest_count_input = "input[name='guest_count']";
 
     client
         .goto(&format!("http://{addr}/"))
@@ -179,28 +192,36 @@ async fn scenario(client: &Client, addr: SocketAddr, profile: BrowserProfile) ->
         !requested(client).await?,
         "the login form was submitted without a name"
     );
-    assert!(value_missing(client, &name_input).await?);
+    assert!(value_missing(client, name_input).await?);
 
     log_in(client, "Alice").await?;
     wait_for_modal(client, BOOKING_MODAL, true).await?;
 
     watch_requests(client).await?;
 
-    clear(client, &guest_count_input).await?;
+    clear(client, guest_count_input).await?;
     submit(client, BOOKING_MODAL).await?;
     assert!(
         !requested(client).await?,
         "the booking form was submitted without a guest count"
     );
-    assert!(value_missing(client, &guest_count_input).await?);
+    assert!(value_missing(client, guest_count_input).await?);
 
-    fill(client, &guest_count_input, "3").await?;
+    fill(client, guest_count_input, "3").await?;
     submit(client, BOOKING_MODAL).await?;
     wait_for_modal(client, BOOKING_MODAL, false).await?;
 
     for day in days {
-        wait_for_class(client, &cell(day), BOOKED_CLASS, true).await?;
-        wait_for_class(client, &cell(day), FULL_CLASS, false).await?;
+        wait_for_attribute_contains(client, &day_button(day), "aria-label", &s.guests(3), true)
+            .await?;
+        wait_for_attribute_contains(
+            client,
+            &day_button(day),
+            "aria-label",
+            s.day_at_capacity,
+            false,
+        )
+        .await?;
     }
 
     let entry = single_popover_entry(client, &start, profile).await?;
@@ -222,14 +243,21 @@ async fn scenario(client: &Client, addr: SocketAddr, profile: BrowserProfile) ->
         !modal_open(client, LOGIN_MODAL).await?,
         "the name modal was shown while editing with a valid session"
     );
-    assert_eq!(value(client, &guest_count_input).await?, "3");
+    assert_eq!(value(client, guest_count_input).await?, "3");
 
-    fill(client, &guest_count_input, &MAX_CAPACITY.to_string()).await?;
+    fill(client, guest_count_input, &MAX_CAPACITY.to_string()).await?;
     submit(client, BOOKING_MODAL).await?;
     wait_for_modal(client, BOOKING_MODAL, false).await?;
 
     for day in days {
-        wait_for_class(client, &cell(day), FULL_CLASS, true).await?;
+        wait_for_attribute_contains(
+            client,
+            &day_button(day),
+            "aria-label",
+            s.day_at_capacity,
+            true,
+        )
+        .await?;
     }
 
     let entry = single_popover_entry(client, &start, profile).await?;
@@ -264,7 +292,14 @@ async fn scenario(client: &Client, addr: SocketAddr, profile: BrowserProfile) ->
     click(client, &delete_button(&start)).await?;
 
     for day in days {
-        wait_for_class(client, &cell(day), BOOKED_CLASS, false).await?;
+        wait_for_attribute_contains(
+            client,
+            &day_button(day),
+            "aria-label",
+            s.day_popover_empty,
+            true,
+        )
+        .await?;
     }
     wait_for_count(client, &format!("{} li", popover(&start)), 0).await?;
 
@@ -274,19 +309,18 @@ async fn scenario(client: &Client, addr: SocketAddr, profile: BrowserProfile) ->
 }
 
 /// The log page lists the three changes made to the booking above, newest
-/// first. Every entry renders as three children of the log grid: the date, the
-/// title and the details.
+/// first.
 async fn booking_log(client: &Client, s: &Strings, profile: BrowserProfile) -> Result<()> {
     profile.dismiss_popovers(client).await?;
     click(client, LOG_LINK).await?;
 
-    wait_for_count(client, &format!("{BOOKING_LOG} > div"), 9).await?;
-    wait_for_class(client, LOG_LINK, ACTIVE_LINK_CLASS, true).await?;
-    wait_for_class(client, CALENDAR_LINK, ACTIVE_LINK_CLASS, false).await?;
+    wait_for_count(client, &format!("{BOOKING_LOG} > article"), 3).await?;
+    wait_for_attribute(client, LOG_LINK, "aria-current", Some("page")).await?;
+    wait_for_attribute(client, CALENDAR_LINK, "aria-current", None).await?;
     wait_for_text(client, LOGGED_IN_INFO, "Alice").await?;
 
     assert_eq!(
-        texts(client, &format!("{BOOKING_LOG} > div:nth-child(3n + 2)")).await?,
+        texts(client, &format!("{BOOKING_LOG} > article > h2")).await?,
         vec![
             s.log_booking_deleted_title("Alice"),
             s.log_booking_changed_title("Alice"),
@@ -294,13 +328,13 @@ async fn booking_log(client: &Client, s: &Strings, profile: BrowserProfile) -> R
         ]
     );
 
-    let dates = texts(client, &format!("{BOOKING_LOG} > div:nth-child(3n + 1)")).await?;
+    let dates = texts(client, &format!("{BOOKING_LOG} > article > time")).await?;
     assert!(
         dates.iter().all(|d| !d.trim().is_empty()),
         "a log entry has no date: {dates:?}"
     );
 
-    let details = texts(client, &format!("{BOOKING_LOG} > div:nth-child(3n)")).await?;
+    let details = texts(client, &format!("{BOOKING_LOG} > article")).await?;
     let (deleted, changed, created) = (&details[0], &details[1], &details[2]);
     assert!(
         deleted.contains(&s.guests(MAX_CAPACITY)),
@@ -316,8 +350,8 @@ async fn booking_log(client: &Client, s: &Strings, profile: BrowserProfile) -> R
     );
 
     click(client, CALENDAR_LINK).await?;
-    wait_for_count(client, CALENDARS, 1).await?;
-    wait_for_class(client, CALENDAR_LINK, ACTIVE_LINK_CLASS, true).await?;
+    wait_for_count(client, "[role=region][aria-label=Calendars]", 1).await?;
+    wait_for_attribute(client, CALENDAR_LINK, "aria-current", Some("page")).await?;
 
     Ok(())
 }
@@ -337,13 +371,20 @@ async fn booking_with_a_session(client: &Client, profile: BrowserProfile) -> Res
 
     close_modal(client, BOOKING_MODAL).await?;
     wait_for_modal(client, BOOKING_MODAL, false).await?;
-    wait_for_class(client, &cell(&start), BOOKED_CLASS, false).await?;
+    wait_for_attribute_contains(
+        client,
+        &day_button(&start),
+        "aria-label",
+        Locale::En.strings().day_popover_empty,
+        true,
+    )
+    .await?;
 
     Ok(())
 }
 
 async fn log_in(client: &Client, name: &str) -> Result<()> {
-    fill(client, &format!("{LOGIN_MODAL} input[name='name']"), name).await?;
+    fill(client, "input[name='name']", name).await?;
     submit(client, LOGIN_MODAL).await?;
     wait_for_modal(client, LOGIN_MODAL, false).await?;
     wait_for_text(client, LOGGED_IN_INFO, name).await
@@ -353,7 +394,7 @@ async fn log_out(client: &Client, login_label: &str, profile: BrowserProfile) ->
     profile.dismiss_popovers(client).await?;
     click(
         client,
-        &format!("{LOGGED_IN_INFO} button[hx-post='/logout']"),
+        &format!("{LOGGED_IN_INFO} button[title='Disconnect']"),
     )
     .await?;
     wait_for_text(client, LOGGED_IN_INFO, login_label).await
@@ -361,13 +402,13 @@ async fn log_out(client: &Client, login_label: &str, profile: BrowserProfile) ->
 
 async fn open_login_modal(client: &Client, profile: BrowserProfile) -> Result<()> {
     profile.dismiss_popovers(client).await?;
-    click(client, &format!("{LOGGED_IN_INFO} button")).await?;
+    click_button_named(client, LOGGED_IN_INFO, "Login").await?;
     wait_for_modal(client, LOGIN_MODAL, true).await
 }
 
 async fn pick_days(client: &Client, start: &str, end: &str, profile: BrowserProfile) -> Result<()> {
     open_popover(client, start, profile).await?;
-    click(client, &format!("{} button.btn-primary", popover(start))).await?;
+    click_button_named(client, &popover(start), "Book…").await?;
     profile.select_end_day(client, end).await
 }
 
@@ -394,24 +435,20 @@ async fn single_popover_entry(
         .context("no booking entry in the popover")
 }
 
-fn cell(day: &str) -> String {
-    format!("[x-ref='cell-{day}']")
-}
-
 fn day_button(day: &str) -> String {
-    format!("{} > button", cell(day))
+    format!("time[datetime='{day}'] > button")
 }
 
 fn popover(day: &str) -> String {
-    format!("[x-ref='day-popover-{day}']")
+    format!("[role='dialog']:has(time[datetime='{day}'])")
 }
 
 fn edit_button(day: &str) -> String {
-    format!("{} li button:not([hx-delete])", popover(day))
+    format!("{} li button[title='Edit']", popover(day))
 }
 
 fn delete_button(day: &str) -> String {
-    format!("{} li button[hx-delete]", popover(day))
+    format!("{} li button[title='Delete']", popover(day))
 }
 
 fn booking_day(day: i8) -> Result<String> {
@@ -426,7 +463,7 @@ fn booking_day(day: i8) -> Result<String> {
         .day(day)
         .build()
         .context("building booking date")?
-        .strftime("%Y%m%d")
+        .strftime("%F")
         .to_string())
 }
 
@@ -527,6 +564,23 @@ async fn click(client: &Client, selector: &str) -> Result<()> {
     Ok(())
 }
 
+async fn click_button_named(client: &Client, scope: &str, name: &str) -> Result<()> {
+    let scope = client
+        .find(Locator::Css(scope))
+        .await
+        .with_context(|| format!("finding {scope}"))?;
+    scope
+        .find(Locator::XPath(&format!(
+            ".//button[normalize-space(.)='{name}']"
+        )))
+        .await
+        .with_context(|| format!("finding the {name} button"))?
+        .click()
+        .await
+        .with_context(|| format!("clicking the {name} button"))?;
+    Ok(())
+}
+
 async fn hover(client: &Client, selector: &str) -> Result<()> {
     let element = client
         .find(Locator::Css(selector))
@@ -573,12 +627,35 @@ async fn fill(client: &Client, selector: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-async fn submit(client: &Client, modal: &str) -> Result<()> {
-    click(client, &format!("{modal} form button.btn-primary")).await
+async fn find_modal(client: &Client, modal: Modal) -> Result<Element> {
+    client
+        .find(Locator::XPath(modal.xpath()))
+        .await
+        .with_context(|| format!("finding the {modal:?} modal by its accessible name"))
 }
 
-async fn close_modal(client: &Client, modal: &str) -> Result<()> {
-    click(client, &format!("{modal} button[aria-label]")).await
+async fn submit(client: &Client, modal: Modal) -> Result<()> {
+    find_modal(client, modal)
+        .await?
+        .find(Locator::XPath(".//button[normalize-space(.)='Save']"))
+        .await
+        .with_context(|| format!("finding the Save button in the {modal:?} modal"))?
+        .click()
+        .await
+        .with_context(|| format!("submitting the {modal:?} modal"))?;
+    Ok(())
+}
+
+async fn close_modal(client: &Client, modal: Modal) -> Result<()> {
+    find_modal(client, modal)
+        .await?
+        .find(Locator::Css("button[aria-label='Close']"))
+        .await
+        .with_context(|| format!("finding the close button in the {modal:?} modal"))?
+        .click()
+        .await
+        .with_context(|| format!("closing the {modal:?} modal"))?;
+    Ok(())
 }
 
 async fn value(client: &Client, selector: &str) -> Result<String> {
@@ -607,7 +684,7 @@ async fn value_missing(client: &Client, selector: &str) -> Result<bool> {
 async fn visible_popover(client: &Client) -> Result<bool> {
     eval(
         client,
-        "return document.querySelector('[x-ref^=\"day-popover-\"].visible') !== null;",
+        "return document.querySelector('[role=\"dialog\"][aria-hidden=\"false\"]') !== null;",
         vec![],
     )
     .await?
@@ -648,24 +725,29 @@ async fn texts(client: &Client, selector: &str) -> Result<Vec<String>> {
     serde_json::from_value(texts).with_context(|| format!("reading the text of {selector}"))
 }
 
-async fn modal_open(client: &Client, modal: &str) -> Result<bool> {
+async fn modal_open(client: &Client, modal: Modal) -> Result<bool> {
     eval(
         client,
-        "return document.querySelector(arguments[0]).open;",
-        vec![json!(modal)],
+        "return document.evaluate(arguments[0], document, null, \
+             XPathResult.FIRST_ORDERED_NODE_TYPE).singleNodeValue.open;",
+        vec![json!(modal.xpath())],
     )
     .await?
     .as_bool()
-    .with_context(|| format!("the open state of {modal} is not a boolean"))
+    .with_context(|| format!("the open state of the {modal:?} modal is not a boolean"))
 }
 
-async fn wait_for_modal(client: &Client, modal: &str, open: bool) -> Result<()> {
+async fn wait_for_modal(client: &Client, modal: Modal, open: bool) -> Result<()> {
     wait_for(
         client,
-        &format!("{modal} to be {}", state(open, "open", "closed")),
-        "const e = document.querySelector(arguments[0]); \
+        &format!(
+            "the {modal:?} modal to be {}",
+            state(open, "open", "closed")
+        ),
+        "const e = document.evaluate(arguments[0], document, null, \
+             XPathResult.FIRST_ORDERED_NODE_TYPE).singleNodeValue; \
          return !!e && e.open === arguments[1];",
-        vec![json!(modal), json!(open)],
+        vec![json!(modal.xpath()), json!(open)],
     )
     .await
 }
@@ -694,16 +776,43 @@ async fn wait_for_animations(client: &Client, selector: &str) -> Result<()> {
     .await
 }
 
-async fn wait_for_class(client: &Client, selector: &str, class: &str, present: bool) -> Result<()> {
+async fn wait_for_attribute(
+    client: &Client,
+    selector: &str,
+    attribute: &str,
+    value: Option<&str>,
+) -> Result<()> {
+    wait_for(
+        client,
+        &format!("{selector} to have {attribute}={value:?}"),
+        "const e = document.querySelector(arguments[0]); \
+         return !!e && e.getAttribute(arguments[1]) === arguments[2];",
+        vec![json!(selector), json!(attribute), json!(value)],
+    )
+    .await
+}
+
+async fn wait_for_attribute_contains(
+    client: &Client,
+    selector: &str,
+    attribute: &str,
+    value: &str,
+    present: bool,
+) -> Result<()> {
     wait_for(
         client,
         &format!(
-            "{selector} to {} the {class} class",
-            state(present, "gain", "lose")
+            "{selector}'s {attribute} to {} {value}",
+            state(present, "contain", "not contain")
         ),
         "const e = document.querySelector(arguments[0]); \
-         return !!e && e.classList.contains(arguments[1]) === arguments[2];",
-        vec![json!(selector), json!(class), json!(present)],
+         return !!e && e.getAttribute(arguments[1]).includes(arguments[2]) === arguments[3];",
+        vec![
+            json!(selector),
+            json!(attribute),
+            json!(value),
+            json!(present),
+        ],
     )
     .await
 }
