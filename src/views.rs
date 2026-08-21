@@ -516,6 +516,7 @@ fn day_popover(
                                 ") "
                                 button
                                   title=(s.day_popover_edit_button_title)
+                                  aria-label=(s.day_popover_edit_button_title)
                                   x-cloak
                                   x-show={"userId === '" (u32::from(b.creator_id)) "'"}
                                   x-on:click={"editBooking(" (serde_json::to_string(&js_booking).expect("error serializing booking")) ")"}
@@ -526,6 +527,7 @@ fn day_popover(
                                 " "
                                 button
                                   title=(s.day_popover_delete_button_title)
+                                  aria-label=(s.day_popover_delete_button_title)
                                   x-cloak
                                   x-show={"userId === '" (u32::from(b.creator_id)) "'"}
                                   hx-confirm=(s.day_popover_confirm_delete_message)
