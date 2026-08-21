@@ -5,30 +5,34 @@
 
 use std::net::SocketAddr;
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::sync::LazyLock;
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
-use fantoccini::actions::{InputSource, MouseActions, PointerAction};
 use fantoccini::elements::Element;
-use fantoccini::{Client, ClientBuilder, Locator};
+use fantoccini::{Client, ClientBuilder};
 use hyper_util::client::legacy::connect::HttpConnector;
+use icu::calendar::{Date as IcuDate, Iso};
+use icu::datetime::DateTimeFormatter;
+use icu::datetime::fieldsets::MD;
+use icu::locale::locale;
 use jiff::tz::TimeZone;
+use jiff_icu::ConvertInto;
 use serde_json::{Value, json};
+
+mod testing_library;
+
+use testing_library::{
+    NameMatch, POLL_INTERVAL, User, WAIT_TIMEOUT, eval, screen, texts_in, value, value_missing,
+    wait_for_animations, wait_for_attribute, wait_for_count, wait_for_count_in, wait_for_text,
+    within,
+};
 
 use bouc::sqlite::MEMORY_DB;
 use bouc::start;
 use bouc::strings::{Locale, Strings};
 
-const WAIT_TIMEOUT: Duration = Duration::from_secs(10);
-const POLL_INTERVAL: Duration = Duration::from_millis(50);
-
 const LOGGED_IN_INFO: &str = "#logged-in-info";
-
-const BOOKING_LOG: &str = "[role='region'][aria-label='Booking log']";
-const CALENDAR_LINK: &str = "a[href='/']";
-const LOG_LINK: &str = "a[href='/log']";
-const VISIBLE_POPOVER_CLOSE: &str =
-    "[role='dialog'][aria-hidden='false'] button[aria-label='Close']";
 
 /// Server-side `max_capacity`, reaching it turns the day cell red.
 const MAX_CAPACITY: u32 = 6;
@@ -40,20 +44,13 @@ enum Modal {
 }
 
 impl Modal {
-    fn xpath(self) -> &'static str {
+    fn accessible_names(self) -> &'static [&'static str] {
         match self {
-            Self::Booking => {
-                r#"//dialog[@aria-labelledby = .//*[@id and (normalize-space(.) = "New booking" or normalize-space(.) = "Edit booking")]/@id]"#
-            }
-            Self::Login => {
-                r#"//dialog[@aria-labelledby = .//*[@id and normalize-space(.) = "What's your name?"]/@id]"#
-            }
+            Self::Booking => &["New booking", "Edit booking"],
+            Self::Login => &["What's your name?"],
         }
     }
 }
-
-const BOOKING_MODAL: Modal = Modal::Booking;
-const LOGIN_MODAL: Modal = Modal::Login;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BrowserProfile {
@@ -97,40 +94,52 @@ impl BrowserProfile {
     }
 
     async fn select_end_day(self, client: &Client, day: &str) -> Result<()> {
+        let button = find_day_button(client, day).await?;
+        let user = User::new(client);
+
         if self == Self::Desktop {
-            hover(client, &day_button(day)).await?;
+            user.hover(&button).await?;
         }
 
-        click(client, &day_button(day)).await
+        user.click(&button).await
     }
 
-    async fn wait_for_open_popover(self, client: &Client, selector: &str) -> Result<()> {
-        wait_for_visible(client, selector).await?;
-        wait_for_displayed_count(
-            client,
-            &format!("{selector} button[aria-label='Close']"),
-            usize::from(self == Self::Mobile),
-        )
-        .await?;
-        wait_for_animations(client, selector).await
+    async fn wait_for_open_popover(self, client: &Client, day: &str) -> Result<Element> {
+        let popover = screen(client)
+            .find_by_role("dialog", Some(NameMatch::Exact(&accessible_day_name(day)?)))
+            .await?;
+        within(client, &popover)
+            .wait_for_role_count(
+                "button",
+                Some(NameMatch::Exact("Close")),
+                usize::from(self == Self::Mobile),
+            )
+            .await?;
+        wait_for_animations(client, &popover).await?;
+        Ok(popover)
     }
 
     async fn dismiss_popovers(self, client: &Client) -> Result<()> {
+        let user = User::new(client);
+
         match self {
-            Self::Desktop => hover(client, "h1").await?,
-            Self::Mobile if visible_popover(client).await? => {
-                click(client, VISIBLE_POPOVER_CLOSE).await?;
+            Self::Desktop => {
+                let heading = screen(client)
+                    .find_by_role("heading", Some(NameMatch::Contains("Bouc")))
+                    .await?;
+                user.hover(&heading).await?;
             }
-            Self::Mobile => {}
+            Self::Mobile => {
+                if let Some(popover) = screen(client).query_by_role("dialog", None).await? {
+                    let close = within(client, &popover)
+                        .find_by_role("button", Some(NameMatch::Exact("Close")))
+                        .await?;
+                    user.click(&close).await?;
+                }
+            }
         }
 
-        wait_for(
-            client,
-            "the day popovers to hide",
-            "return document.querySelector('[role=\"dialog\"][aria-hidden=\"false\"]') === null;",
-            vec![],
-        )
-        .await
+        screen(client).wait_for_role_count("dialog", None, 0).await
     }
 }
 
@@ -170,8 +179,7 @@ async fn scenario(client: &Client, addr: SocketAddr, profile: BrowserProfile) ->
     let s = Locale::En.strings();
     let (start, middle, end) = (booking_day(10)?, booking_day(11)?, booking_day(12)?);
     let days = [start.as_str(), middle.as_str(), end.as_str()];
-    let name_input = "input[name='name']";
-    let guest_count_input = "input[name='guest_count']";
+    let user = User::new(client);
 
     client
         .goto(&format!("http://{addr}/"))
@@ -179,49 +187,50 @@ async fn scenario(client: &Client, addr: SocketAddr, profile: BrowserProfile) ->
         .context("loading the index page")?;
 
     pick_days(client, &start, &end, profile).await?;
-    wait_for_modal(client, LOGIN_MODAL, true).await?;
+    let login_modal = find_modal(client, Modal::Login).await?;
     assert!(
-        !modal_open(client, BOOKING_MODAL).await?,
+        !modal_open(client, Modal::Booking).await?,
         "the booking modal was shown to a visitor without a session"
     );
 
     watch_requests(client).await?;
 
-    submit(client, LOGIN_MODAL).await?;
+    submit(client, Modal::Login).await?;
     assert!(
         !requested(client).await?,
         "the login form was submitted without a name"
     );
-    assert!(value_missing(client, name_input).await?);
+    let name_input = within(client, &login_modal)
+        .find_by_role("textbox", Some(NameMatch::Contains(s.name_modal_name)))
+        .await?;
+    assert!(value_missing(&name_input).await?);
 
     log_in(client, "Alice").await?;
-    wait_for_modal(client, BOOKING_MODAL, true).await?;
+    let booking_modal = find_modal(client, Modal::Booking).await?;
+    let guest_count_input = within(client, &booking_modal)
+        .find_by_role(
+            "spinbutton",
+            Some(NameMatch::Contains(s.booking_modal_guest_count)),
+        )
+        .await?;
 
     watch_requests(client).await?;
 
-    clear(client, guest_count_input).await?;
-    submit(client, BOOKING_MODAL).await?;
+    user.clear(&guest_count_input).await?;
+    submit(client, Modal::Booking).await?;
     assert!(
         !requested(client).await?,
         "the booking form was submitted without a guest count"
     );
-    assert!(value_missing(client, guest_count_input).await?);
+    assert!(value_missing(&guest_count_input).await?);
 
-    fill(client, guest_count_input, "3").await?;
-    submit(client, BOOKING_MODAL).await?;
-    wait_for_modal(client, BOOKING_MODAL, false).await?;
+    user.fill(&guest_count_input, "3").await?;
+    submit(client, Modal::Booking).await?;
+    wait_for_modal_to_close(client, Modal::Booking).await?;
 
     for day in days {
-        wait_for_attribute_contains(client, &day_button(day), "aria-label", &s.guests(3), true)
-            .await?;
-        wait_for_attribute_contains(
-            client,
-            &day_button(day),
-            "aria-label",
-            s.day_at_capacity,
-            false,
-        )
-        .await?;
+        wait_for_day_name_contains(client, day, &s.guests(3), true).await?;
+        wait_for_day_name_contains(client, day, s.day_at_capacity, false).await?;
     }
 
     let entry = single_popover_entry(client, &start, profile).await?;
@@ -233,31 +242,40 @@ async fn scenario(client: &Client, addr: SocketAddr, profile: BrowserProfile) ->
     booking_with_a_session(client, profile).await?;
 
     // the creator gets the edit and delete buttons
-    open_popover(client, &start, profile).await?;
-    wait_for_displayed_count(client, &edit_button(&start), 1).await?;
-    wait_for_displayed_count(client, &delete_button(&start), 1).await?;
-
-    click(client, &edit_button(&start)).await?;
-    wait_for_modal(client, BOOKING_MODAL, true).await?;
-    assert!(
-        !modal_open(client, LOGIN_MODAL).await?,
-        "the name modal was shown while editing with a valid session"
-    );
-    assert_eq!(value(client, guest_count_input).await?, "3");
-
-    fill(client, guest_count_input, &MAX_CAPACITY.to_string()).await?;
-    submit(client, BOOKING_MODAL).await?;
-    wait_for_modal(client, BOOKING_MODAL, false).await?;
-
-    for day in days {
-        wait_for_attribute_contains(
-            client,
-            &day_button(day),
-            "aria-label",
-            s.day_at_capacity,
-            true,
+    let popover = open_popover(client, &start, profile).await?;
+    let edit = within(client, &popover)
+        .find_by_role(
+            "button",
+            Some(NameMatch::Exact(s.day_popover_edit_button_title)),
         )
         .await?;
+    within(client, &popover)
+        .find_by_role(
+            "button",
+            Some(NameMatch::Exact(s.day_popover_delete_button_title)),
+        )
+        .await?;
+    user.click(&edit).await?;
+    let booking_modal = find_modal(client, Modal::Booking).await?;
+    assert!(
+        !modal_open(client, Modal::Login).await?,
+        "the name modal was shown while editing with a valid session"
+    );
+    let guest_count_input = within(client, &booking_modal)
+        .find_by_role(
+            "spinbutton",
+            Some(NameMatch::Contains(s.booking_modal_guest_count)),
+        )
+        .await?;
+    assert_eq!(value(&guest_count_input).await?, "3");
+
+    user.fill(&guest_count_input, &MAX_CAPACITY.to_string())
+        .await?;
+    submit(client, Modal::Booking).await?;
+    wait_for_modal_to_close(client, Modal::Booking).await?;
+
+    for day in days {
+        wait_for_day_name_contains(client, day, s.day_at_capacity, true).await?;
     }
 
     let entry = single_popover_entry(client, &start, profile).await?;
@@ -268,40 +286,41 @@ async fn scenario(client: &Client, addr: SocketAddr, profile: BrowserProfile) ->
 
     // neither a visitor without a session nor another user may touch the booking
     log_out(client, s.profile_login, profile).await?;
-    open_popover(client, &start, profile).await?;
-    wait_for_displayed_count(client, &edit_button(&start), 0).await?;
-    wait_for_displayed_count(client, &delete_button(&start), 0).await?;
+    let popover = open_popover(client, &start, profile).await?;
+    wait_for_booking_action_count(client, &popover, s, 0).await?;
 
     open_login_modal(client, profile).await?;
     log_in(client, "Bob").await?;
     assert!(
-        !modal_open(client, BOOKING_MODAL).await?,
+        !modal_open(client, Modal::Booking).await?,
         "logging in from the header opened the booking modal"
     );
 
-    open_popover(client, &start, profile).await?;
-    wait_for_displayed_count(client, &edit_button(&start), 0).await?;
-    wait_for_displayed_count(client, &delete_button(&start), 0).await?;
+    let popover = open_popover(client, &start, profile).await?;
+    wait_for_booking_action_count(client, &popover, s, 0).await?;
 
     log_out(client, s.profile_login, profile).await?;
     open_login_modal(client, profile).await?;
     log_in(client, "Alice").await?;
 
-    open_popover(client, &start, profile).await?;
-    wait_for_displayed_count(client, &delete_button(&start), 1).await?;
-    click(client, &delete_button(&start)).await?;
-
-    for day in days {
-        wait_for_attribute_contains(
-            client,
-            &day_button(day),
-            "aria-label",
-            s.day_popover_empty,
-            true,
+    let popover = open_popover(client, &start, profile).await?;
+    let delete = within(client, &popover)
+        .find_by_role(
+            "button",
+            Some(NameMatch::Exact(s.day_popover_delete_button_title)),
         )
         .await?;
+    user.click(&delete).await?;
+
+    for day in days {
+        wait_for_day_name_contains(client, day, s.day_popover_empty, true).await?;
     }
-    wait_for_count(client, &format!("{} li", popover(&start)), 0).await?;
+    wait_for_count(
+        client,
+        &format!("[role='dialog']:has(time[datetime='{start}']) li"),
+        0,
+    )
+    .await?;
 
     booking_log(client, s, profile).await?;
 
@@ -312,15 +331,28 @@ async fn scenario(client: &Client, addr: SocketAddr, profile: BrowserProfile) ->
 /// first.
 async fn booking_log(client: &Client, s: &Strings, profile: BrowserProfile) -> Result<()> {
     profile.dismiss_popovers(client).await?;
-    click(client, LOG_LINK).await?;
+    let user = User::new(client);
+    let log_link = screen(client)
+        .find_by_role("link", Some(NameMatch::Contains(s.navbar_link_log)))
+        .await?;
+    user.click(&log_link).await?;
 
-    wait_for_count(client, &format!("{BOOKING_LOG} > article"), 3).await?;
-    wait_for_attribute(client, LOG_LINK, "aria-current", Some("page")).await?;
-    wait_for_attribute(client, CALENDAR_LINK, "aria-current", None).await?;
+    let booking_log = screen(client)
+        .find_by_role("region", Some(NameMatch::Exact("Booking log")))
+        .await?;
+    wait_for_count_in(client, &booking_log, ":scope > article", 3).await?;
+    let log_link = screen(client)
+        .find_by_role("link", Some(NameMatch::Contains(s.navbar_link_log)))
+        .await?;
+    let calendar_link = screen(client)
+        .find_by_role("link", Some(NameMatch::Contains(s.navbar_link_calendar)))
+        .await?;
+    wait_for_attribute(client, &log_link, "aria-current", Some("page")).await?;
+    wait_for_attribute(client, &calendar_link, "aria-current", None).await?;
     wait_for_text(client, LOGGED_IN_INFO, "Alice").await?;
 
     assert_eq!(
-        texts(client, &format!("{BOOKING_LOG} > article > h2")).await?,
+        texts_in(client, &booking_log, ":scope > article > h2").await?,
         vec![
             s.log_booking_deleted_title("Alice"),
             s.log_booking_changed_title("Alice"),
@@ -328,13 +360,13 @@ async fn booking_log(client: &Client, s: &Strings, profile: BrowserProfile) -> R
         ]
     );
 
-    let dates = texts(client, &format!("{BOOKING_LOG} > article > time")).await?;
+    let dates = texts_in(client, &booking_log, ":scope > article > time").await?;
     assert!(
         dates.iter().all(|d| !d.trim().is_empty()),
         "a log entry has no date: {dates:?}"
     );
 
-    let details = texts(client, &format!("{BOOKING_LOG} > article")).await?;
+    let details = texts_in(client, &booking_log, ":scope > article").await?;
     let (deleted, changed, created) = (&details[0], &details[1], &details[2]);
     assert!(
         deleted.contains(&s.guests(MAX_CAPACITY)),
@@ -349,9 +381,14 @@ async fn booking_log(client: &Client, s: &Strings, profile: BrowserProfile) -> R
         "the created booking is missing its guest count: {created}"
     );
 
-    click(client, CALENDAR_LINK).await?;
-    wait_for_count(client, "[role=region][aria-label=Calendars]", 1).await?;
-    wait_for_attribute(client, CALENDAR_LINK, "aria-current", Some("page")).await?;
+    user.click(&calendar_link).await?;
+    screen(client)
+        .find_by_role("region", Some(NameMatch::Exact("Calendars")))
+        .await?;
+    let calendar_link = screen(client)
+        .find_by_role("link", Some(NameMatch::Contains(s.navbar_link_calendar)))
+        .await?;
+    wait_for_attribute(client, &calendar_link, "aria-current", Some("page")).await?;
 
     Ok(())
 }
@@ -363,59 +400,74 @@ async fn booking_with_a_session(client: &Client, profile: BrowserProfile) -> Res
     let (start, end) = (booking_day(20)?, booking_day(21)?);
 
     pick_days(client, &start, &end, profile).await?;
-    wait_for_modal(client, BOOKING_MODAL, true).await?;
+    let booking_modal = find_modal(client, Modal::Booking).await?;
     assert!(
-        !modal_open(client, LOGIN_MODAL).await?,
+        !modal_open(client, Modal::Login).await?,
         "the name modal was shown to a user with a valid session"
     );
 
-    close_modal(client, BOOKING_MODAL).await?;
-    wait_for_modal(client, BOOKING_MODAL, false).await?;
-    wait_for_attribute_contains(
-        client,
-        &day_button(&start),
-        "aria-label",
-        Locale::En.strings().day_popover_empty,
-        true,
-    )
-    .await?;
+    close_modal(client, &booking_modal).await?;
+    wait_for_modal_to_close(client, Modal::Booking).await?;
+    wait_for_day_name_contains(client, &start, Locale::En.strings().day_popover_empty, true)
+        .await?;
 
     Ok(())
 }
 
 async fn log_in(client: &Client, name: &str) -> Result<()> {
-    fill(client, "input[name='name']", name).await?;
-    submit(client, LOGIN_MODAL).await?;
-    wait_for_modal(client, LOGIN_MODAL, false).await?;
+    let modal = find_modal(client, Modal::Login).await?;
+    let input = within(client, &modal)
+        .find_by_role(
+            "textbox",
+            Some(NameMatch::Contains(Locale::En.strings().name_modal_name)),
+        )
+        .await?;
+    User::new(client).fill(&input, name).await?;
+    submit(client, Modal::Login).await?;
+    wait_for_modal_to_close(client, Modal::Login).await?;
     wait_for_text(client, LOGGED_IN_INFO, name).await
 }
 
 async fn log_out(client: &Client, login_label: &str, profile: BrowserProfile) -> Result<()> {
     profile.dismiss_popovers(client).await?;
-    click(
-        client,
-        &format!("{LOGGED_IN_INFO} button[title='Disconnect']"),
-    )
-    .await?;
+    let disconnect = screen(client)
+        .find_by_role(
+            "button",
+            Some(NameMatch::Exact(Locale::En.strings().profile_disconnect)),
+        )
+        .await?;
+    User::new(client).click(&disconnect).await?;
     wait_for_text(client, LOGGED_IN_INFO, login_label).await
 }
 
 async fn open_login_modal(client: &Client, profile: BrowserProfile) -> Result<()> {
     profile.dismiss_popovers(client).await?;
-    click_button_named(client, LOGGED_IN_INFO, "Login").await?;
-    wait_for_modal(client, LOGIN_MODAL, true).await
+    let login = screen(client)
+        .find_by_role(
+            "button",
+            Some(NameMatch::Exact(Locale::En.strings().profile_login)),
+        )
+        .await?;
+    User::new(client).click(&login).await
 }
 
 async fn pick_days(client: &Client, start: &str, end: &str, profile: BrowserProfile) -> Result<()> {
-    open_popover(client, start, profile).await?;
-    click_button_named(client, &popover(start), "Book…").await?;
+    let popover = open_popover(client, start, profile).await?;
+    let book = within(client, &popover)
+        .find_by_role(
+            "button",
+            Some(NameMatch::Exact(Locale::En.strings().start_booking)),
+        )
+        .await?;
+    User::new(client).click(&book).await?;
     profile.select_end_day(client, end).await
 }
 
-async fn open_popover(client: &Client, day: &str, profile: BrowserProfile) -> Result<()> {
+async fn open_popover(client: &Client, day: &str, profile: BrowserProfile) -> Result<Element> {
     profile.dismiss_popovers(client).await?;
-    click(client, &day_button(day)).await?;
-    profile.wait_for_open_popover(client, &popover(day)).await
+    let button = find_day_button(client, day).await?;
+    User::new(client).click(&button).await?;
+    profile.wait_for_open_popover(client, day).await
 }
 
 /// Saving a booking closes the day popover, so it has to be reopened before
@@ -425,30 +477,37 @@ async fn single_popover_entry(
     day: &str,
     profile: BrowserProfile,
 ) -> Result<String> {
-    open_popover(client, day, profile).await?;
-    wait_for_count(client, &format!("{} li", popover(day)), 1).await?;
+    let popover = open_popover(client, day, profile).await?;
+    wait_for_count_in(client, &popover, "li", 1).await?;
 
-    let entries = texts(client, &format!("{} li", popover(day))).await?;
+    let entries = texts_in(client, &popover, "li").await?;
     entries
         .into_iter()
         .next()
         .context("no booking entry in the popover")
 }
 
-fn day_button(day: &str) -> String {
-    format!("time[datetime='{day}'] > button")
-}
-
-fn popover(day: &str) -> String {
-    format!("[role='dialog']:has(time[datetime='{day}'])")
-}
-
-fn edit_button(day: &str) -> String {
-    format!("{} li button[title='Edit']", popover(day))
-}
-
-fn delete_button(day: &str) -> String {
-    format!("{} li button[title='Delete']", popover(day))
+async fn wait_for_booking_action_count(
+    client: &Client,
+    popover: &Element,
+    s: &Strings,
+    count: usize,
+) -> Result<()> {
+    let popover = within(client, popover);
+    popover
+        .wait_for_role_count(
+            "button",
+            Some(NameMatch::Exact(s.day_popover_edit_button_title)),
+            count,
+        )
+        .await?;
+    popover
+        .wait_for_role_count(
+            "button",
+            Some(NameMatch::Exact(s.day_popover_delete_button_title)),
+            count,
+        )
+        .await
 }
 
 fn booking_day(day: i8) -> Result<String> {
@@ -553,143 +612,71 @@ async fn new_client(port: u16, browser: Option<&str>, profile: BrowserProfile) -
         .context("connecting to chromedriver")
 }
 
-async fn click(client: &Client, selector: &str) -> Result<()> {
-    client
-        .find(Locator::Css(selector))
-        .await
-        .with_context(|| format!("finding {selector}"))?
-        .click()
-        .await
-        .with_context(|| format!("clicking {selector}"))?;
-    Ok(())
+static DAY_FORMATTER_EN: LazyLock<DateTimeFormatter<MD>> = LazyLock::new(|| {
+    DateTimeFormatter::try_new(locale!("en").into(), MD::long())
+        .expect("failed to build English day formatter")
+});
+
+fn accessible_day_name(day: &str) -> Result<String> {
+    let date = jiff::civil::Date::strptime("%F", day).context("parsing booking day")?;
+    let icu_date: IcuDate<Iso> = date.convert_into();
+    Ok(DAY_FORMATTER_EN.format(&icu_date).to_string())
 }
 
-async fn click_button_named(client: &Client, scope: &str, name: &str) -> Result<()> {
-    let scope = client
-        .find(Locator::Css(scope))
-        .await
-        .with_context(|| format!("finding {scope}"))?;
-    scope
-        .find(Locator::XPath(&format!(
-            ".//button[normalize-space(.)='{name}']"
-        )))
-        .await
-        .with_context(|| format!("finding the {name} button"))?
-        .click()
-        .await
-        .with_context(|| format!("clicking the {name} button"))?;
-    Ok(())
-}
-
-async fn hover(client: &Client, selector: &str) -> Result<()> {
-    let element = client
-        .find(Locator::Css(selector))
-        .await
-        .with_context(|| format!("finding {selector}"))?;
-    client
-        .perform_actions(
-            MouseActions::new("mouse".to_owned()).then(PointerAction::MoveToElement {
-                element,
-                duration: None,
-                x: 0.0,
-                y: 0.0,
-            }),
+async fn find_day_button(client: &Client, day: &str) -> Result<Element> {
+    screen(client)
+        .find_by_role(
+            "button",
+            Some(NameMatch::Contains(&accessible_day_name(day)?)),
         )
         .await
-        .with_context(|| format!("hovering {selector}"))?;
-    Ok(())
 }
 
-async fn clear(client: &Client, selector: &str) -> Result<()> {
-    client
-        .find(Locator::Css(selector))
+async fn wait_for_day_name_contains(
+    client: &Client,
+    day: &str,
+    value: &str,
+    present: bool,
+) -> Result<()> {
+    let day_name = accessible_day_name(day)?;
+    let values = [day_name.as_str(), value];
+    screen(client)
+        .wait_for_role_count(
+            "button",
+            Some(NameMatch::AllContains(&values)),
+            usize::from(present),
+        )
         .await
-        .with_context(|| format!("finding {selector}"))?
-        .clear()
-        .await
-        .with_context(|| format!("clearing {selector}"))?;
-    Ok(())
-}
-
-async fn fill(client: &Client, selector: &str, value: &str) -> Result<()> {
-    let element = client
-        .find(Locator::Css(selector))
-        .await
-        .with_context(|| format!("finding {selector}"))?;
-    element
-        .clear()
-        .await
-        .with_context(|| format!("clearing {selector}"))?;
-    element
-        .send_keys(value)
-        .await
-        .with_context(|| format!("typing into {selector}"))?;
-    Ok(())
 }
 
 async fn find_modal(client: &Client, modal: Modal) -> Result<Element> {
-    client
-        .find(Locator::XPath(modal.xpath()))
+    screen(client)
+        .find_by_role(
+            "dialog",
+            Some(NameMatch::AnyExact(modal.accessible_names())),
+        )
         .await
-        .with_context(|| format!("finding the {modal:?} modal by its accessible name"))
 }
 
 async fn submit(client: &Client, modal: Modal) -> Result<()> {
-    find_modal(client, modal)
-        .await?
-        .find(Locator::XPath(".//button[normalize-space(.)='Save']"))
+    let modal_element = find_modal(client, modal).await?;
+    let save = within(client, &modal_element)
+        .find_by_role("button", Some(NameMatch::Exact("Save")))
+        .await?;
+    User::new(client)
+        .click(&save)
         .await
-        .with_context(|| format!("finding the Save button in the {modal:?} modal"))?
-        .click()
-        .await
-        .with_context(|| format!("submitting the {modal:?} modal"))?;
-    Ok(())
+        .with_context(|| format!("submitting the {modal:?} modal"))
 }
 
-async fn close_modal(client: &Client, modal: Modal) -> Result<()> {
-    find_modal(client, modal)
-        .await?
-        .find(Locator::Css("button[aria-label='Close']"))
+async fn close_modal(client: &Client, modal: &Element) -> Result<()> {
+    let close = within(client, modal)
+        .find_by_role("button", Some(NameMatch::Exact("Close")))
+        .await?;
+    User::new(client)
+        .click(&close)
         .await
-        .with_context(|| format!("finding the close button in the {modal:?} modal"))?
-        .click()
-        .await
-        .with_context(|| format!("closing the {modal:?} modal"))?;
-    Ok(())
-}
-
-async fn value(client: &Client, selector: &str) -> Result<String> {
-    client
-        .find(Locator::Css(selector))
-        .await
-        .with_context(|| format!("finding {selector}"))?
-        .prop("value")
-        .await
-        .with_context(|| format!("reading the value of {selector}"))?
-        .with_context(|| format!("{selector} has no value"))
-}
-
-async fn value_missing(client: &Client, selector: &str) -> Result<bool> {
-    let missing = eval(
-        client,
-        "return document.querySelector(arguments[0]).validity.valueMissing;",
-        vec![json!(selector)],
-    )
-    .await?;
-    missing
-        .as_bool()
-        .with_context(|| format!("validity of {selector} is not a boolean"))
-}
-
-async fn visible_popover(client: &Client) -> Result<bool> {
-    eval(
-        client,
-        "return document.querySelector('[role=\"dialog\"][aria-hidden=\"false\"]') !== null;",
-        vec![],
-    )
-    .await?
-    .as_bool()
-    .context("the visible popover state is not a boolean")
+        .context("closing modal")
 }
 
 /// htmx fires `htmx:beforeRequest` while handling the click, so the flag is
@@ -715,166 +702,22 @@ async fn requested(client: &Client) -> Result<bool> {
         .context("the request flag is not a boolean")
 }
 
-async fn texts(client: &Client, selector: &str) -> Result<Vec<String>> {
-    let texts = eval(
-        client,
-        "return Array.from(document.querySelectorAll(arguments[0]), e => e.textContent);",
-        vec![json!(selector)],
-    )
-    .await?;
-    serde_json::from_value(texts).with_context(|| format!("reading the text of {selector}"))
-}
-
 async fn modal_open(client: &Client, modal: Modal) -> Result<bool> {
-    eval(
-        client,
-        "return document.evaluate(arguments[0], document, null, \
-             XPathResult.FIRST_ORDERED_NODE_TYPE).singleNodeValue.open;",
-        vec![json!(modal.xpath())],
-    )
-    .await?
-    .as_bool()
-    .with_context(|| format!("the open state of the {modal:?} modal is not a boolean"))
+    Ok(!screen(client)
+        .query_all_by_role(
+            "dialog",
+            Some(NameMatch::AnyExact(modal.accessible_names())),
+        )
+        .await?
+        .is_empty())
 }
 
-async fn wait_for_modal(client: &Client, modal: Modal, open: bool) -> Result<()> {
-    wait_for(
-        client,
-        &format!(
-            "the {modal:?} modal to be {}",
-            state(open, "open", "closed")
-        ),
-        "const e = document.evaluate(arguments[0], document, null, \
-             XPathResult.FIRST_ORDERED_NODE_TYPE).singleNodeValue; \
-         return !!e && e.open === arguments[1];",
-        vec![json!(modal.xpath()), json!(open)],
-    )
-    .await
-}
-
-async fn wait_for_visible(client: &Client, selector: &str) -> Result<()> {
-    wait_for(
-        client,
-        &format!("{selector} to become visible"),
-        "const e = document.querySelector(arguments[0]); \
-         return !!e && getComputedStyle(e).visibility === 'visible';",
-        vec![json!(selector)],
-    )
-    .await
-}
-
-async fn wait_for_animations(client: &Client, selector: &str) -> Result<()> {
-    wait_for(
-        client,
-        &format!("animations on {selector} to settle"),
-        "const e = document.querySelector(arguments[0]); \
-         return !!e && e.getAnimations({ subtree: true }).every(animation => \
-             animation.playState === 'finished' || animation.playState === 'idle' \
-         );",
-        vec![json!(selector)],
-    )
-    .await
-}
-
-async fn wait_for_attribute(
-    client: &Client,
-    selector: &str,
-    attribute: &str,
-    value: Option<&str>,
-) -> Result<()> {
-    wait_for(
-        client,
-        &format!("{selector} to have {attribute}={value:?}"),
-        "const e = document.querySelector(arguments[0]); \
-         return !!e && e.getAttribute(arguments[1]) === arguments[2];",
-        vec![json!(selector), json!(attribute), json!(value)],
-    )
-    .await
-}
-
-async fn wait_for_attribute_contains(
-    client: &Client,
-    selector: &str,
-    attribute: &str,
-    value: &str,
-    present: bool,
-) -> Result<()> {
-    wait_for(
-        client,
-        &format!(
-            "{selector}'s {attribute} to {} {value}",
-            state(present, "contain", "not contain")
-        ),
-        "const e = document.querySelector(arguments[0]); \
-         return !!e && e.getAttribute(arguments[1]).includes(arguments[2]) === arguments[3];",
-        vec![
-            json!(selector),
-            json!(attribute),
-            json!(value),
-            json!(present),
-        ],
-    )
-    .await
-}
-
-async fn wait_for_count(client: &Client, selector: &str, count: usize) -> Result<()> {
-    wait_for(
-        client,
-        &format!("{count} element(s) matching {selector}"),
-        "return document.querySelectorAll(arguments[0]).length === arguments[1];",
-        vec![json!(selector), json!(count)],
-    )
-    .await
-}
-
-async fn wait_for_displayed_count(client: &Client, selector: &str, count: usize) -> Result<()> {
-    wait_for(
-        client,
-        &format!("{count} displayed element(s) matching {selector}"),
-        "return Array.from(document.querySelectorAll(arguments[0])) \
-             .filter(e => getComputedStyle(e).display !== 'none').length === arguments[1];",
-        vec![json!(selector), json!(count)],
-    )
-    .await
-}
-
-async fn wait_for_text(client: &Client, selector: &str, text: &str) -> Result<()> {
-    wait_for(
-        client,
-        &format!("{selector} to contain {text}"),
-        "const e = document.querySelector(arguments[0]); \
-         return !!e && e.textContent.includes(arguments[1]);",
-        vec![json!(selector), json!(text)],
-    )
-    .await
-}
-
-fn state(value: bool, yes: &'static str, no: &'static str) -> &'static str {
-    if value { yes } else { no }
-}
-
-async fn wait_for(
-    client: &Client,
-    description: &str,
-    script: &str,
-    args: Vec<Value>,
-) -> Result<()> {
-    let deadline = Instant::now() + WAIT_TIMEOUT;
-
-    loop {
-        if eval(client, script, args.clone()).await? == json!(true) {
-            return Ok(());
-        }
-        if Instant::now() >= deadline {
-            bail!("timed out waiting for {description}");
-        }
-        tokio::time::sleep(POLL_INTERVAL).await;
-    }
-}
-
-async fn eval(client: &Client, script: &str, args: Vec<Value>) -> Result<Value> {
-    client
-        .execute(script, args)
+async fn wait_for_modal_to_close(client: &Client, modal: Modal) -> Result<()> {
+    screen(client)
+        .wait_for_role_count(
+            "dialog",
+            Some(NameMatch::AnyExact(modal.accessible_names())),
+            0,
+        )
         .await
-        .with_context(|| format!("evaluating {script}"))
 }
