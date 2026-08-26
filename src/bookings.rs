@@ -165,7 +165,7 @@ pub trait Repository: Send + Sync {
     ) -> Result<()>;
 
     /// Saves a new booking + a log entry.
-    async fn create_booking(&self, booking: &BookingInput) -> Result<Booking>;
+    async fn create_booking(&self, booking: &BookingInput) -> Result<(Booking, BookingLogEntry)>;
 
     /// Updates an existing booking + adds a log entry.
     async fn update_booking(
@@ -173,13 +173,17 @@ pub trait Repository: Send + Sync {
         id: BookingId,
         creator_id: PersonId,
         booking: &BookingInput,
-    ) -> Result<Booking, UpdateBookingError>;
+    ) -> Result<(Booking, BookingLogEntry), UpdateBookingError>;
 
     /// List all bookings after a given date.
     async fn list_bookings(&self, after: Date) -> Result<Vec<Booking>>;
 
-    /// Delete a booking, doing nothing if no booking has that id.
-    async fn delete_booking(&self, id: BookingId, creator_id: PersonId) -> Result<()>;
+    /// Delete a booking.
+    async fn delete_booking(
+        &self,
+        id: BookingId,
+        creator_id: PersonId,
+    ) -> Result<BookingLogEntry, DeleteBookingError>;
 
     /// Load one page of booking log entries, newest first. Pass the id of the
     /// last entry of the previous page as `before` to get the next one.
@@ -191,6 +195,16 @@ pub trait Repository: Send + Sync {
 
 #[derive(Debug, Error)]
 pub enum UpdateBookingError {
+    /// No booking has that id, or it was created by somebody else.
+    #[error("booking not found")]
+    NotFound,
+    /// The underlying storage failed.
+    #[error(transparent)]
+    Internal(#[from] anyhow::Error),
+}
+
+#[derive(Debug, Error)]
+pub enum DeleteBookingError {
     /// No booking has that id, or it was created by somebody else.
     #[error("booking not found")]
     NotFound,

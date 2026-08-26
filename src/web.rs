@@ -369,10 +369,13 @@ async fn delete_booking(
         return Ok((StatusCode::UNAUTHORIZED, "unauthorized").into_response());
     };
 
-    app.repo
-        .delete_booking(BookingId::new(id), user_id)
-        .await
-        .context("deleting booking")?;
+    match app.repo.delete_booking(BookingId::new(id), user_id).await {
+        Ok(_) => {}
+        Err(bookings::DeleteBookingError::NotFound) => {
+            return Ok((StatusCode::NOT_FOUND, "booking not found").into_response());
+        }
+        Err(e) => return Err(AppError::from(e)),
+    }
 
     Ok(oob_calendars(&*app.repo, locale).await.into_response())
 }

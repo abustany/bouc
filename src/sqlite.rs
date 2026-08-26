@@ -8,7 +8,7 @@ use tokio_rusqlite::{Connection, rusqlite};
 
 use crate::bookings::{
     Booking, BookingId, BookingInput, BookingLogEntry, BookingLogEntryId, BookingLogEntryPayload,
-    NotificationSubscription, Person, PersonId, Repository, UpdateBookingError,
+    DeleteBookingError, NotificationSubscription, Person, PersonId, Repository, UpdateBookingError,
 };
 
 const BOOKING_LOG_PAGE_SIZE: u32 = 50;
@@ -141,36 +141,41 @@ impl Repository for SqliteRepository {
             .context("saving notification subscription")
     }
 
-    async fn create_booking(&self, booking: &BookingInput) -> anyhow::Result<Booking> {
+    async fn create_booking(
+        &self,
+        booking: &BookingInput,
+    ) -> anyhow::Result<(Booking, BookingLogEntry)> {
         let booking = booking.clone();
         self.conn
-            .call(move |conn| -> rusqlite::Result<Booking> {
-                let tx = conn.transaction()?;
+            .call(
+                move |conn| -> rusqlite::Result<(Booking, BookingLogEntry)> {
+                    let tx = conn.transaction()?;
 
-                let new_id: i64 = tx.query_row(
-                    "INSERT INTO bookings (start_date, end_date, creator_id, guest_count) \
-                     VALUES (?1, ?2, ?3, ?4) RETURNING id",
-                    rusqlite::params![
-                        format_date(&booking.start_date()),
-                        format_date(&booking.end_date()),
-                        u32::from(booking.creator_id()),
-                        booking.guest_count(),
-                    ],
-                    |row| row.get(0),
-                )?;
+                    let new_id: i64 = tx.query_row(
+                        "INSERT INTO bookings (start_date, end_date, creator_id, guest_count) \
+                         VALUES (?1, ?2, ?3, ?4) RETURNING id",
+                        rusqlite::params![
+                            format_date(&booking.start_date()),
+                            format_date(&booking.end_date()),
+                            u32::from(booking.creator_id()),
+                            booking.guest_count(),
+                        ],
+                        |row| row.get(0),
+                    )?;
 
-                let created = persisted(BookingId::new(parse_u32(new_id)?), booking);
-                append_log(
-                    &tx,
-                    created.creator_id,
-                    &BookingLogEntryPayload::BookingCreated {
-                        booking: created.clone(),
-                    },
-                )?;
+                    let created = persisted(BookingId::new(parse_u32(new_id)?), booking);
+                    let log_entry = append_log(
+                        &tx,
+                        created.creator_id,
+                        BookingLogEntryPayload::BookingCreated {
+                            booking: created.clone(),
+                        },
+                    )?;
 
-                tx.commit()?;
-                Ok(created)
-            })
+                    tx.commit()?;
+                    Ok((created, log_entry))
+                },
+            )
             .await
             .context("creating booking")
     }
@@ -180,64 +185,66 @@ impl Repository for SqliteRepository {
         id: BookingId,
         creator_id: PersonId,
         booking: &BookingInput,
-    ) -> Result<Booking, UpdateBookingError> {
+    ) -> Result<(Booking, BookingLogEntry), UpdateBookingError> {
         let booking = booking.clone();
         self.conn
-            .call(move |conn| -> rusqlite::Result<Option<Booking>> {
-                let tx = conn.transaction()?;
+            .call(
+                move |conn| -> rusqlite::Result<Option<(Booking, BookingLogEntry)>> {
+                    let tx = conn.transaction()?;
 
-                let before = tx
-                    .query_row(
-                        "SELECT start_date, end_date, guest_count FROM bookings \
-                         WHERE id = ?1 AND creator_id = ?2",
-                        rusqlite::params![u32::from(id), u32::from(creator_id)],
-                        |row| {
-                            Ok(Booking {
-                                id,
-                                start_date: parse_date(&row.get::<_, String>(0)?)?,
-                                end_date: parse_date(&row.get::<_, String>(1)?)?,
-                                creator_id,
-                                guest_count: parse_u32(row.get(2)?)?,
-                            })
+                    let before = tx
+                        .query_row(
+                            "SELECT start_date, end_date, guest_count FROM bookings \
+                             WHERE id = ?1 AND creator_id = ?2",
+                            rusqlite::params![u32::from(id), u32::from(creator_id)],
+                            |row| {
+                                Ok(Booking {
+                                    id,
+                                    start_date: parse_date(&row.get::<_, String>(0)?)?,
+                                    end_date: parse_date(&row.get::<_, String>(1)?)?,
+                                    creator_id,
+                                    guest_count: parse_u32(row.get(2)?)?,
+                                })
+                            },
+                        )
+                        .optional()?;
+
+                    let Some(before) = before else {
+                        return Ok(None);
+                    };
+
+                    tx.execute(
+                        "UPDATE bookings \
+                         SET start_date = ?1, end_date = ?2, guest_count = ?3 \
+                         WHERE id = ?4",
+                        rusqlite::params![
+                            format_date(&booking.start_date()),
+                            format_date(&booking.end_date()),
+                            booking.guest_count(),
+                            u32::from(id),
+                        ],
+                    )?;
+
+                    let after = Booking {
+                        id,
+                        start_date: booking.start_date(),
+                        end_date: booking.end_date(),
+                        creator_id,
+                        guest_count: booking.guest_count(),
+                    };
+                    let log_entry = append_log(
+                        &tx,
+                        creator_id,
+                        BookingLogEntryPayload::BookingChanged {
+                            before,
+                            after: after.clone(),
                         },
-                    )
-                    .optional()?;
+                    )?;
 
-                let Some(before) = before else {
-                    return Ok(None);
-                };
-
-                tx.execute(
-                    "UPDATE bookings \
-                     SET start_date = ?1, end_date = ?2, guest_count = ?3 \
-                     WHERE id = ?4",
-                    rusqlite::params![
-                        format_date(&booking.start_date()),
-                        format_date(&booking.end_date()),
-                        booking.guest_count(),
-                        u32::from(id),
-                    ],
-                )?;
-
-                let after = Booking {
-                    id,
-                    start_date: booking.start_date(),
-                    end_date: booking.end_date(),
-                    creator_id,
-                    guest_count: booking.guest_count(),
-                };
-                append_log(
-                    &tx,
-                    creator_id,
-                    &BookingLogEntryPayload::BookingChanged {
-                        before,
-                        after: after.clone(),
-                    },
-                )?;
-
-                tx.commit()?;
-                Ok(Some(after))
-            })
+                    tx.commit()?;
+                    Ok(Some((after, log_entry)))
+                },
+            )
             .await
             .map_err(|e| UpdateBookingError::Internal(e.into()))?
             .ok_or(UpdateBookingError::NotFound)
@@ -268,9 +275,13 @@ impl Repository for SqliteRepository {
             .context("listing bookings")
     }
 
-    async fn delete_booking(&self, id: BookingId, creator_id: PersonId) -> anyhow::Result<()> {
+    async fn delete_booking(
+        &self,
+        id: BookingId,
+        creator_id: PersonId,
+    ) -> Result<BookingLogEntry, DeleteBookingError> {
         self.conn
-            .call(move |conn| -> rusqlite::Result<()> {
+            .call(move |conn| -> rusqlite::Result<Option<BookingLogEntry>> {
                 let tx = conn.transaction()?;
 
                 let deleted = tx
@@ -290,19 +301,22 @@ impl Repository for SqliteRepository {
                     )
                     .optional()?;
 
-                if let Some(booking) = deleted {
-                    append_log(
-                        &tx,
-                        creator_id,
-                        &BookingLogEntryPayload::BookingDeleted { booking },
-                    )?;
-                }
+                let Some(booking) = deleted else {
+                    return Ok(None);
+                };
+
+                let log_entry = append_log(
+                    &tx,
+                    creator_id,
+                    BookingLogEntryPayload::BookingDeleted { booking },
+                )?;
 
                 tx.commit()?;
-                Ok(())
+                Ok(Some(log_entry))
             })
             .await
-            .context("deleting booking")
+            .map_err(|e| DeleteBookingError::Internal(e.into()))?
+            .ok_or(DeleteBookingError::NotFound)
     }
 
     async fn list_booking_log(
@@ -336,16 +350,27 @@ impl Repository for SqliteRepository {
 fn append_log(
     tx: &rusqlite::Transaction,
     creator_id: PersonId,
-    payload: &BookingLogEntryPayload,
-) -> rusqlite::Result<()> {
-    let payload = to_json(payload)?;
+    payload: BookingLogEntryPayload,
+) -> rusqlite::Result<BookingLogEntry> {
+    let create_time = Timestamp::now();
 
-    tx.execute(
-        "INSERT INTO bookings_log (creator_id, create_time, payload) VALUES (?1, ?2, ?3)",
-        rusqlite::params![u32::from(creator_id), Timestamp::now().to_string(), payload,],
+    let id: i64 = tx.query_row(
+        "INSERT INTO bookings_log (creator_id, create_time, payload) \
+         VALUES (?1, ?2, ?3) RETURNING id",
+        rusqlite::params![
+            u32::from(creator_id),
+            create_time.to_string(),
+            to_json(&payload)?,
+        ],
+        |row| row.get(0),
     )?;
 
-    Ok(())
+    Ok(BookingLogEntry {
+        id: BookingLogEntryId::new(parse_u32(id)?),
+        creator_id,
+        create_time,
+        payload,
+    })
 }
 
 fn format_date(d: &jiff::civil::Date) -> String {
@@ -420,6 +445,7 @@ mod tests {
         repo.create_booking(&BookingInput::new(start_date(), end_date(), creator, guests).unwrap())
             .await
             .unwrap()
+            .0
     }
 
     #[tokio::test]
@@ -431,7 +457,7 @@ mod tests {
         let created = booking_for(&repo, person.id, 3).await;
         assert_eq!(created.guest_count, 3);
 
-        let updated = repo
+        let (updated, log_entry) = repo
             .update_booking(
                 created.id,
                 person.id,
@@ -441,6 +467,11 @@ mod tests {
             .unwrap();
         assert_eq!(updated.id, created.id);
         assert_eq!(updated.guest_count, 5);
+        assert!(matches!(
+            log_entry.payload,
+            BookingLogEntryPayload::BookingChanged { before, after }
+                if before.guest_count == 3 && after.guest_count == 5
+        ));
     }
 
     #[tokio::test]
@@ -521,19 +552,19 @@ mod tests {
         let repo = setup().await;
         let person = repo.save_person("Alice").await.unwrap();
 
-        let past = repo
+        let (past, _) = repo
             .create_booking(
                 &BookingInput::new(date(2026, 1, 10), date(2026, 1, 12), person.id, 3).unwrap(),
             )
             .await
             .unwrap();
-        let later = repo
+        let (later, _) = repo
             .create_booking(
                 &BookingInput::new(date(2026, 8, 5), date(2026, 8, 7), person.id, 3).unwrap(),
             )
             .await
             .unwrap();
-        let ongoing = repo
+        let (ongoing, _) = repo
             .create_booking(
                 &BookingInput::new(date(2026, 7, 20), date(2026, 7, 28), person.id, 3).unwrap(),
             )
@@ -549,21 +580,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deletes_booking_and_ignores_missing_ones() {
+    async fn deletes_booking_and_fails_on_missing_ones() {
         let repo = setup().await;
         let person = repo.save_person("Alice").await.unwrap();
         let other_person = repo.save_person("Bob").await.unwrap();
         let created = booking_for(&repo, person.id, 3).await;
 
-        repo.delete_booking(created.id, other_person.id)
-            .await
-            .unwrap();
+        assert!(matches!(
+            repo.delete_booking(created.id, other_person.id).await,
+            Err(DeleteBookingError::NotFound)
+        ));
         assert!(repo.list_bookings(start_date()).await.unwrap().len() == 1);
 
-        repo.delete_booking(created.id, person.id).await.unwrap();
+        let log_entry = repo.delete_booking(created.id, person.id).await.unwrap();
+        assert!(matches!(
+            log_entry.payload,
+            BookingLogEntryPayload::BookingDeleted { booking } if booking.id == created.id
+        ));
         assert!(repo.list_bookings(start_date()).await.unwrap().is_empty());
 
-        repo.delete_booking(created.id, person.id).await.unwrap();
+        assert!(matches!(
+            repo.delete_booking(created.id, person.id).await,
+            Err(DeleteBookingError::NotFound)
+        ));
     }
 
     #[tokio::test]
@@ -604,19 +643,27 @@ mod tests {
         let repo = setup().await;
         let person = repo.save_person("Alice").await.unwrap();
 
-        let created = booking_for(&repo, person.id, 3).await;
-        repo.update_booking(
-            created.id,
-            person.id,
-            &BookingInput::new(start_date(), end_date(), person.id, 5).unwrap(),
-        )
-        .await
-        .unwrap();
-        repo.delete_booking(created.id, person.id).await.unwrap();
+        let (created, create_entry) = repo
+            .create_booking(&BookingInput::new(start_date(), end_date(), person.id, 3).unwrap())
+            .await
+            .unwrap();
+        let (_, update_entry) = repo
+            .update_booking(
+                created.id,
+                person.id,
+                &BookingInput::new(start_date(), end_date(), person.id, 5).unwrap(),
+            )
+            .await
+            .unwrap();
+        let delete_entry = repo.delete_booking(created.id, person.id).await.unwrap();
 
         let entries = repo.list_booking_log(None).await.unwrap();
         assert_eq!(entries.len(), 3);
         assert!(entries.iter().all(|e| e.creator_id == person.id));
+        assert_eq!(
+            entries.iter().map(|e| e.id).collect::<Vec<_>>(),
+            vec![delete_entry.id, update_entry.id, create_entry.id]
+        );
 
         assert!(matches!(
             &entries[2].payload,
