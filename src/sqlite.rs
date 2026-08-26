@@ -57,6 +57,25 @@ impl SqliteRepository {
 
 #[async_trait]
 impl Repository for SqliteRepository {
+    async fn get_person(&self, id: PersonId) -> anyhow::Result<Option<Person>> {
+        self.conn
+            .call(move |conn| -> rusqlite::Result<Option<Person>> {
+                conn.query_row(
+                    "SELECT id, name FROM people WHERE id = ?1",
+                    rusqlite::params![u32::from(id)],
+                    |row| {
+                        Ok(Person {
+                            id: PersonId::new(parse_u32(row.get(0)?)?),
+                            name: row.get(1)?,
+                        })
+                    },
+                )
+                .optional()
+            })
+            .await
+            .context("getting person")
+    }
+
     async fn save_person(&self, name: &str) -> anyhow::Result<Person> {
         let name = name.to_owned();
         self.conn
@@ -483,6 +502,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gets_person_by_id() {
+        let repo = setup().await;
+        let person = repo.save_person("Alice").await.unwrap();
+
+        let found = repo.get_person(person.id).await.unwrap().unwrap();
+        assert_eq!(found.id, person.id);
+        assert_eq!(found.name, "Alice");
+
+        assert!(
+            repo.get_person(PersonId::new(u32::from(person.id) + 1))
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
     async fn saving_existing_name_returns_existing_row() {
         let repo = setup().await;
 
@@ -532,6 +568,7 @@ mod tests {
             payload: NotificationSubscriptionPayload::Active {
                 email: "alice@example.com".to_owned(),
                 unsubscribe_token: "unsubscribe_token".to_owned(),
+                locale: "en".to_owned(),
             },
         })
         .await

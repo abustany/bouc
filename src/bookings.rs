@@ -151,6 +151,9 @@ pub enum ListBookingsFilter {
 
 #[async_trait::async_trait]
 pub trait Repository: Send + Sync {
+    /// Gets a person by its id.
+    async fn get_person(&self, id: PersonId) -> Result<Option<Person>>;
+
     /// Persist a person identified by their name.
     async fn save_person(&self, name: &str) -> Result<Person>;
 
