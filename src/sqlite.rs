@@ -8,7 +8,7 @@ use tokio_rusqlite::{Connection, rusqlite};
 
 use crate::bookings::{
     Booking, BookingId, BookingInput, BookingLogEntry, BookingLogEntryId, BookingLogEntryPayload,
-    Person, PersonId, Repository, UpdateBookingError,
+    NotificationSubscription, Person, PersonId, Repository, UpdateBookingError,
 };
 
 const BOOKING_LOG_PAGE_SIZE: u32 = 50;
@@ -93,6 +93,52 @@ impl Repository for SqliteRepository {
             })
             .await
             .context("listing people")
+    }
+
+    async fn get_notification_subscription(
+        &self,
+        person_id: PersonId,
+    ) -> anyhow::Result<Option<NotificationSubscription>> {
+        self.conn
+            .call(
+                move |conn| -> rusqlite::Result<Option<NotificationSubscription>> {
+                    conn.query_row(
+                        "SELECT payload FROM notification_subscriptions WHERE person_id = ?1",
+                        rusqlite::params![u32::from(person_id)],
+                        |row| {
+                            Ok(NotificationSubscription {
+                                person_id,
+                                payload: parse_json(&row.get::<_, String>(0)?)?,
+                            })
+                        },
+                    )
+                    .optional()
+                },
+            )
+            .await
+            .context("getting notification subscription")
+    }
+
+    async fn save_notification_subscription(
+        &self,
+        subscription: &NotificationSubscription,
+    ) -> anyhow::Result<()> {
+        let subscription = subscription.clone();
+        self.conn
+            .call(move |conn| -> rusqlite::Result<()> {
+                conn.execute(
+                    "INSERT INTO notification_subscriptions (person_id, payload) \
+                     VALUES (?1, ?2) \
+                     ON CONFLICT(person_id) DO UPDATE SET payload = excluded.payload",
+                    rusqlite::params![
+                        u32::from(subscription.person_id),
+                        to_json(&subscription.payload)?,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+            .context("saving notification subscription")
     }
 
     async fn create_booking(&self, booking: &BookingInput) -> anyhow::Result<Booking> {
@@ -276,7 +322,7 @@ impl Repository for SqliteRepository {
                             id: BookingLogEntryId::new(parse_u32(row.get(0)?)?),
                             creator_id: PersonId::new(parse_u32(row.get(1)?)?),
                             create_time: parse_timestamp(&row.get::<_, String>(2)?)?,
-                            payload: parse_payload(&row.get::<_, String>(3)?)?,
+                            payload: parse_json(&row.get::<_, String>(3)?)?,
                         })
                     })?
                     .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -292,8 +338,7 @@ fn append_log(
     creator_id: PersonId,
     payload: &BookingLogEntryPayload,
 ) -> rusqlite::Result<()> {
-    let payload = serde_json::to_string(payload)
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+    let payload = to_json(payload)?;
 
     tx.execute(
         "INSERT INTO bookings_log (creator_id, create_time, payload) VALUES (?1, ?2, ?3)",
@@ -319,10 +364,14 @@ fn parse_timestamp(s: &str) -> rusqlite::Result<Timestamp> {
     })
 }
 
-fn parse_payload(s: &str) -> rusqlite::Result<BookingLogEntryPayload> {
+fn parse_json<T: serde::de::DeserializeOwned>(s: &str) -> rusqlite::Result<T> {
     serde_json::from_str(s).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, e.into())
     })
+}
+
+fn to_json<T: serde::Serialize>(payload: &T) -> rusqlite::Result<String> {
+    serde_json::to_string(payload).map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))
 }
 
 fn parse_u32(value: i64) -> rusqlite::Result<u32> {
@@ -346,6 +395,7 @@ mod tests {
     use jiff::civil::date;
 
     use super::*;
+    use crate::bookings::NotificationSubscriptionPayload;
 
     async fn setup() -> SqliteRepository {
         let conn = Connection::open_in_memory().await.unwrap();
@@ -402,6 +452,68 @@ mod tests {
 
         assert_eq!(first.id, again.id);
         assert_eq!(again.name, "Alice");
+    }
+
+    #[tokio::test]
+    async fn notification_subscription_is_saved_then_updated() {
+        let repo = setup().await;
+        let person = repo.save_person("Alice").await.unwrap();
+        let other_person = repo.save_person("Bob").await.unwrap();
+
+        assert!(
+            repo.get_notification_subscription(person.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        repo.save_notification_subscription(&NotificationSubscription {
+            person_id: person.id,
+            payload: NotificationSubscriptionPayload::Pending {
+                email: "alice@example.com".to_owned(),
+                verification_token: "verification_token".to_owned(),
+            },
+        })
+        .await
+        .unwrap();
+
+        let saved = repo
+            .get_notification_subscription(person.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.person_id, person.id);
+        assert!(matches!(
+            saved.payload,
+            NotificationSubscriptionPayload::Pending { email, verification_token } if email == "alice@example.com" && verification_token == "verification_token"
+        ));
+
+        repo.save_notification_subscription(&NotificationSubscription {
+            person_id: person.id,
+            payload: NotificationSubscriptionPayload::Active {
+                email: "alice@example.com".to_owned(),
+                unsubscribe_token: "unsubscribe_token".to_owned(),
+            },
+        })
+        .await
+        .unwrap();
+
+        let updated = repo
+            .get_notification_subscription(person.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            updated.payload,
+            NotificationSubscriptionPayload::Active { email, unsubscribe_token, locale } if email == "alice@example.com" && unsubscribe_token == "unsubscribe_token" && locale == "en"
+        ));
+
+        assert!(
+            repo.get_notification_subscription(other_person.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]

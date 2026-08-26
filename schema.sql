@@ -3,6 +3,11 @@ CREATE TABLE people (
   name TEXT NOT NULL UNIQUE
 ) strict;
 
+CREATE TABLE notification_subscriptions (
+  person_id INTEGER PRIMARY KEY REFERENCES people(id),
+  payload TEXT NOT NULL -- JSON
+) strict;
+
 CREATE TABLE bookings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   start_date TEXT NOT NULL, -- YYYYMMDD

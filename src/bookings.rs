@@ -123,6 +123,27 @@ pub enum BookingLogEntryPayload {
     BookingDeleted { booking: Booking },
 }
 
+#[derive(Debug, Clone)]
+pub struct NotificationSubscription {
+    pub person_id: PersonId,
+    pub payload: NotificationSubscriptionPayload,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum NotificationSubscriptionPayload {
+    Pending {
+        email: String,
+        verification_token: String,
+    }, // user asked to be notified, needs to confirm email address
+    Active {
+        email: String,
+        locale: String,
+        unsubscribe_token: String,
+    }, // user is receiving notifications at the given address
+    Disabled, // user declined notifications
+}
+
 #[async_trait::async_trait]
 pub trait Repository: Send + Sync {
     /// Persist a person identified by their name.
@@ -130,6 +151,18 @@ pub trait Repository: Send + Sync {
 
     /// List every person, ordered by name.
     async fn list_people(&self) -> Result<Vec<Person>>;
+
+    /// Gets the notification subscription for a given person.
+    async fn get_notification_subscription(
+        &self,
+        person_id: PersonId,
+    ) -> Result<Option<NotificationSubscription>>;
+
+    /// Creates or updates the notification subscription for a given person.
+    async fn save_notification_subscription(
+        &self,
+        subscription: &NotificationSubscription,
+    ) -> Result<()>;
 
     /// Saves a new booking + a log entry.
     async fn create_booking(&self, booking: &BookingInput) -> Result<Booking>;
