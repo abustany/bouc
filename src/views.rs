@@ -32,23 +32,10 @@ pub enum ActivePage {
     Log,
 }
 
-pub struct LayoutOpts<'a> {
-    locale: Locale,
-    people: &'a HashMap<PersonId, Person>,
-    user_id: Option<PersonId>,
-    active_page: ActivePage,
-}
-
-pub fn layout(opts: &LayoutOpts, children: Markup) -> Markup {
-    let s = opts.locale.strings();
-    let user_id_js_str = opts
-        .user_id
-        .map(|id| format!("'{}'", u32::from(id)))
-        .unwrap_or("null".to_owned());
-
+fn skeleton(lang: &str, children: Markup) -> Markup {
     html! {
         (DOCTYPE)
-        html lang=(s.lang) {
+        html lang=(lang) {
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
@@ -58,10 +45,44 @@ pub fn layout(opts: &LayoutOpts, children: Markup) -> Markup {
                 script src="/assets/index.js" defer {};
                 script src="/assets/vendor/alpine-3.15.12.min.js" defer {};
             }
+            (children)
+        }
+    }
+}
+
+#[derive(Serialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum NotificationSubscriptionState {
+    None,
+    Pending,
+    Active,
+    Disabled,
+}
+
+pub struct LayoutOpts<'a> {
+    locale: Locale,
+    people: &'a HashMap<PersonId, Person>,
+    user_id: Option<PersonId>,
+    notification_subscription_state: NotificationSubscriptionState,
+    active_page: ActivePage,
+}
+
+pub fn layout(opts: &LayoutOpts, children: Markup) -> Markup {
+    let s = opts.locale.strings();
+    let user_id_js_str = serde_json::to_string(&opts.user_id.map(|id| u32::from(id).to_string()))
+        .expect("error encoding user id to json");
+    let notification_subscription_state_str =
+        serde_json::to_string(&opts.notification_subscription_state)
+            .expect("error encoding has active notification subscription to json");
+
+    skeleton(
+        s.lang,
+        html! {
             body
-              x-data={"app(" (user_id_js_str) ")"}
-              x-on:user-logged-in="onUserLoggedIn($event.detail.userId)"
+              x-data={"app(" (user_id_js_str) ", " (notification_subscription_state_str) ")"}
+              x-on:user-logged-in="onUserLoggedIn($event.detail.userId, $event.detail.notificationSubscriptionState)"
               x-on:user-logged-out="onUserLoggedOut()"
+              x-on:notification-subscription-state-changed="onNotificationSubscriptionStateChanged($event.detail.state)"
               .grid .grid-cols-1 .px-4 .py-2 .mt-14
             {
                 header
@@ -81,8 +102,9 @@ pub fn layout(opts: &LayoutOpts, children: Markup) -> Markup {
                 }
                 (children)
             }
-        }
-    }
+
+        },
+    )
 }
 
 pub struct IndexOpts<'a, 'b> {
@@ -93,6 +115,7 @@ pub struct IndexOpts<'a, 'b> {
     pub max_capacity: u32,
     pub people: &'b HashMap<PersonId, Person>,
     pub user_id: Option<PersonId>,
+    pub notification_subscription_state: NotificationSubscriptionState,
 }
 
 pub const CALENDARS_ELEMENT_ID: &str = "calendars";
@@ -119,18 +142,35 @@ pub fn index(opts: IndexOpts) -> Markup {
             locale: opts.locale,
             people: opts.people,
             user_id: opts.user_id,
+            notification_subscription_state: opts.notification_subscription_state,
         },
         html! {
             div
               x-data="calendar"
               "x-on:keydown.escape.window"="closePopover()"
+              "x-on:booking-saved.window"="onBookingSaved()"
             {
-                p .pb-2 .text-center .italic {
-                    span x-show="!isPickingDays" {
-                        (hint(s.index_hint, s.index_hint_touch))
+                p .pb-2 .text-center .italic .min-h-8 role="region" aria-label="Notifications" {
+                    span x-show="hintToShow === 'pick-day'" {
+                        (pointer_touch_switch(s.index_hint, s.index_hint_touch))
                     }
-                    span x-cloak x-show="isPickingDays" {
-                        (hint(s.index_hint_end_day, s.index_hint_end_day_touch))
+                    span x-cloak x-show="hintToShow === 'pick-end-day'" {
+                        (pointer_touch_switch(s.index_hint_end_day, s.index_hint_end_day_touch))
+                    }
+                    span x-cloak x-show="hintToShow === 'booking-complete'" .space-x-2 {
+                        span { (s.index_hint_booking_complete_info) }
+
+                        button
+                            x-cloak x-show="notificationSubscriptionState === 'none'"
+                            "x-on:click.self"={"onSubscribeToNotifications()"}
+                            .underline .underline-offset-4 .cursor-pointer
+                        {
+                            "✉️ " (s.index_hint_booking_notifications_cta)
+                        }
+
+                        span x-cloak x-show="notificationSubscriptionState === 'pending'" { (s.index_hint_booking_notifications_pending) }
+
+                        span x-cloak x-show="notificationSubscriptionState === 'active'" { (s.index_hint_booking_notifications_active) }
                     }
                 }
 
@@ -152,6 +192,9 @@ pub fn index(opts: IndexOpts) -> Markup {
             (name_modal(&NameModalOpts {
                 locale: opts.locale,
             }))
+            (email_modal(&EmailModalOpts {
+                locale: opts.locale,
+            }))
             script {
                 "window.localizedStrings = "
                 (PreEscaped(serde_json::to_string(&s).expect("error serializing localized strings to JSON")))
@@ -160,7 +203,7 @@ pub fn index(opts: IndexOpts) -> Markup {
     )
 }
 
-fn hint(pointer: &str, touch: &str) -> Markup {
+fn pointer_touch_switch(pointer: &str, touch: &str) -> Markup {
     html! {
         span ."sheet:hidden" { (pointer) }
         span .hidden ."sheet:block" { (touch) }
@@ -481,6 +524,7 @@ fn day_popover(
                                   hx-confirm=(s.day_popover_confirm_delete_message)
                                   hx-delete={"/bookings/" (u32::from(b.id))}
                                   hx-swap="none" // server will OOB-swap the calendars
+                                  x-on:click="justBooked = false"
                                   .cursor-pointer
                                 {
                                     "🗑️"
@@ -645,6 +689,55 @@ fn name_modal_contents(locale: Locale) -> Markup {
     }
 }
 
+struct EmailModalOpts {
+    locale: Locale,
+}
+
+fn email_modal(opts: &EmailModalOpts) -> Markup {
+    let s = opts.locale.strings();
+
+    html! {
+        div
+          x-data="emailModal"
+          "x-on:show-email-modal.window"="showModal()"
+        {
+            (modal(&ModalOpts {
+                title: html! { (s.email_modal_title) },
+                children: email_modal_contents(opts.locale),
+                x_ref: Some("modal".to_string()),
+                locale: opts.locale,
+                ..Default::default()
+            }))
+        }
+    }
+}
+
+fn email_modal_contents(locale: Locale) -> Markup {
+    let s = locale.strings();
+
+    html! {
+        form
+          .grid .grid-flow-row .gap-1 .my-1
+          method="post"
+          action="/notifications"
+          hx-post="/notifications"
+          hx-swap="none"
+        {
+            label .grid ."grid-cols-[auto_1fr]" .items-center .gap-1 {
+                (s.email_modal_name)
+                ": "
+                input type="email" name="email" required autofocus {}
+            }
+            div .grid .justify-end .mt-2 {
+                button .btn-primary {
+                    (s.email_modal_save)
+                }
+            }
+        }
+
+    }
+}
+
 pub struct LoggedInInfoOpts<'a> {
     pub id: Option<String>,
     pub hx_swap_oob: bool,
@@ -758,6 +851,7 @@ pub struct BookingLogOpts<'a, 'b> {
     pub tz: TimeZone,
     pub people: &'a HashMap<PersonId, Person>,
     pub user_id: Option<PersonId>,
+    pub notification_subscription_state: NotificationSubscriptionState,
     pub log_entries: &'b [BookingLogEntry],
 }
 
@@ -768,6 +862,7 @@ pub fn booking_log(opts: &BookingLogOpts) -> Markup {
             locale: opts.locale,
             people: opts.people,
             user_id: opts.user_id,
+            notification_subscription_state: opts.notification_subscription_state,
         },
         html! {
             div
@@ -777,6 +872,52 @@ pub fn booking_log(opts: &BookingLogOpts) -> Markup {
             {
                 @for e in opts.log_entries {
                     (booking_log_item(&BookingLogItemOpts::from_booking_log_entry(opts.locale, opts.tz.clone(), opts.people, e)))
+                }
+            }
+        },
+    )
+}
+
+pub fn email_verified(locale: Locale, verified: bool) -> Markup {
+    let s = locale.strings();
+    skeleton(
+        s.lang,
+        html! {
+            body
+              .fixed .inset-0 .grid .place-content-center
+            {
+                p .text-xl .text-center {
+                    @if verified {
+                        (s.email_verified_ok)
+                    } @else {
+                        (s.email_verified_error)
+                    }
+                }
+                p .text-center {
+                    (s.email_you_can_close)
+                }
+            }
+        },
+    )
+}
+
+pub fn email_unsubscribed(locale: Locale, unsubscribed: bool) -> Markup {
+    let s = locale.strings();
+    skeleton(
+        s.lang,
+        html! {
+            body
+              .fixed .inset-0 .grid .place-content-center
+            {
+                p .text-xl .text-center {
+                    @if unsubscribed {
+                        (s.email_unsubscribed_ok)
+                    } @else {
+                        (s.email_unsubscribed_error)
+                    }
+                }
+                p .text-center {
+                    (s.email_you_can_close)
                 }
             }
         },

@@ -1,11 +1,14 @@
+use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use icu::calendar::{Date as IcuDate, Iso};
 use icu::datetime::DateTimeFormatter;
-use icu::datetime::fieldsets::{M, MD};
+use icu::datetime::fieldsets::{M, MD, YMD};
 use icu::locale::locale;
 use jiff_icu::ConvertInto;
 use serde::Serialize;
+
+use crate::interpolate::interpolate;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Locale {
@@ -44,7 +47,7 @@ impl Locale {
         best.map(|(locale, _)| locale).unwrap_or_default()
     }
 
-    fn from_language_tag(tag: &str) -> Option<Self> {
+    pub fn from_language_tag(tag: &str) -> Option<Self> {
         let primary = tag.split('-').next()?;
 
         if primary.eq_ignore_ascii_case("fr") {
@@ -64,6 +67,10 @@ pub struct Strings {
     pub index_hint_touch: &'static str,
     pub index_hint_end_day: &'static str,
     pub index_hint_end_day_touch: &'static str,
+    pub index_hint_booking_complete_info: &'static str,
+    pub index_hint_booking_notifications_cta: &'static str,
+    pub index_hint_booking_notifications_pending: &'static str,
+    pub index_hint_booking_notifications_active: &'static str,
     pub modal_close: &'static str,
     pub day_popover_empty: &'static str,
     pub day_popover_edit_button_title: &'static str,
@@ -89,6 +96,9 @@ pub struct Strings {
     pub name_modal_title: &'static str,
     pub name_modal_name: &'static str,
     pub name_modal_save: &'static str,
+    pub email_modal_title: &'static str,
+    pub email_modal_name: &'static str,
+    pub email_modal_save: &'static str,
     pub profile_login: &'static str,
     pub profile_disconnect: &'static str,
     pub log_booking_created_title_suffix: &'static str,
@@ -96,10 +106,27 @@ pub struct Strings {
     pub log_booking_deleted_title_suffix: &'static str,
     pub navbar_link_calendar: &'static str,
     pub navbar_link_log: &'static str,
+    pub notification_greeting: &'static str,
+    pub notification_will_stay_with_you_subject: &'static str,
+    pub notification_will_stay_with_you_body: &'static str,
+    pub notification_will_not_stay_with_you_anymore_subject: &'static str,
+    pub notification_will_not_stay_with_you_anymore_body: &'static str,
+    pub notification_signature: &'static str,
+    pub notification_unsubscribe: &'static str,
+    pub verification_email_subject: &'static str,
+    pub verification_email_body: &'static str,
+    pub email_verified_ok: &'static str,
+    pub email_verified_error: &'static str,
+    pub email_unsubscribed_ok: &'static str,
+    pub email_unsubscribed_error: &'static str,
+    pub email_you_can_close: &'static str,
+
     #[serde(skip)]
     month_formatter: &'static LazyLock<DateTimeFormatter<M>>,
     #[serde(skip)]
     month_day_formatter: &'static LazyLock<DateTimeFormatter<MD>>,
+    #[serde(skip)]
+    year_month_day_formatter: &'static LazyLock<DateTimeFormatter<YMD>>,
 }
 
 impl Strings {
@@ -124,12 +151,72 @@ impl Strings {
         format!("{actor_name} {}", self.log_booking_deleted_title_suffix)
     }
 
+    pub fn notification_greeting(&self, recipient_name: &str) -> String {
+        interpolate(
+            self.notification_greeting,
+            &HashMap::from([("recipient_name", recipient_name)]),
+        )
+        .expect("error formatting")
+    }
+
+    pub fn notification_will_stay_with_you_body(
+        &self,
+        booker_name: &str,
+        guest_count: u32,
+        start_date: &jiff::civil::Date,
+        end_date: &jiff::civil::Date,
+    ) -> String {
+        interpolate(
+            self.notification_will_stay_with_you_body,
+            &HashMap::from([
+                ("booker_name", booker_name),
+                ("guest_count", &guest_count.to_string()),
+                ("start_date", &self.format_date_year_month_day(*start_date)),
+                ("end_date", &self.format_date_year_month_day(*end_date)),
+            ]),
+        )
+        .expect("error formatting")
+    }
+
+    pub fn notification_will_not_stay_with_you_anymore_body(
+        &self,
+        booker_name: &str,
+        guest_count: u32,
+        start_date: &jiff::civil::Date,
+        end_date: &jiff::civil::Date,
+    ) -> String {
+        interpolate(
+            self.notification_will_not_stay_with_you_anymore_body,
+            &HashMap::from([
+                ("booker_name", booker_name),
+                ("guest_count", &guest_count.to_string()),
+                ("start_date", &self.format_date_year_month_day(*start_date)),
+                ("end_date", &self.format_date_year_month_day(*end_date)),
+            ]),
+        )
+        .expect("error formatting")
+    }
+
+    pub fn verification_email_body(&self, verification_link: &str) -> String {
+        interpolate(
+            self.verification_email_body,
+            &HashMap::from([("verification_link", verification_link)]),
+        )
+        .expect("error formatting")
+    }
+
     pub fn format_date_month_name(&self, d: impl ConvertInto<IcuDate<Iso>>) -> String {
         ucfirst(&self.month_formatter.format(&d.convert_into()).to_string())
     }
 
     pub fn format_date_month_day(&self, d: impl ConvertInto<IcuDate<Iso>>) -> String {
         self.month_day_formatter
+            .format(&d.convert_into())
+            .to_string()
+    }
+
+    pub fn format_date_year_month_day(&self, d: impl ConvertInto<IcuDate<Iso>>) -> String {
+        self.year_month_day_formatter
             .format(&d.convert_into())
             .to_string()
     }
@@ -155,12 +242,22 @@ static MONTH_FORMATTER_EN: LazyLock<DateTimeFormatter<M>> = LazyLock::new(|| {
 
 static MONTH_DAY_FORMATTER_FR: LazyLock<DateTimeFormatter<MD>> = LazyLock::new(|| {
     DateTimeFormatter::try_new(locale!("fr").into(), MD::long())
-        .expect("failed to build French day formatter")
+        .expect("failed to build French month day formatter")
 });
 
 static MONTH_DAY_FORMATTER_EN: LazyLock<DateTimeFormatter<MD>> = LazyLock::new(|| {
     DateTimeFormatter::try_new(locale!("en").into(), MD::long())
-        .expect("failed to build English day formatter")
+        .expect("failed to build English month day formatter")
+});
+
+static YEAR_MONTH_DAY_FORMATTER_FR: LazyLock<DateTimeFormatter<YMD>> = LazyLock::new(|| {
+    DateTimeFormatter::try_new(locale!("fr").into(), YMD::long())
+        .expect("failed to build French month day year formatter")
+});
+
+static YEAR_MONTH_DAY_FORMATTER_EN: LazyLock<DateTimeFormatter<YMD>> = LazyLock::new(|| {
+    DateTimeFormatter::try_new(locale!("en").into(), YMD::long())
+        .expect("failed to build English month day year formatter")
 });
 
 static FR: Strings = Strings {
@@ -169,6 +266,10 @@ static FR: Strings = Strings {
     index_hint_touch: "Toucher un jour pour entrer une réservation ou afficher les détails",
     index_hint_end_day: "Cliquer sur le dernier jour du séjour",
     index_hint_end_day_touch: "Toucher le dernier jour du séjour",
+    index_hint_booking_complete_info: "Réservation bien enregistrée!",
+    index_hint_booking_notifications_cta: "M'avertir si quelqu'un réserve sur cette période",
+    index_hint_booking_notifications_pending: "Vérifie ta boite mail, un lien de vérification t'y attend",
+    index_hint_booking_notifications_active: "Tu seras averti si quelqu'un réserve sur cette période",
     modal_close: "Fermer",
     day_popover_empty: "Aucune réservation",
     day_popover_edit_button_title: "Modifier",
@@ -191,9 +292,12 @@ static FR: Strings = Strings {
     booking_modal_dates: "Dates",
     booking_modal_guest_count: "Personnes",
     booking_modal_save: "Enregistrer",
-    name_modal_title: "Comment t'appelle-tu ?",
+    name_modal_title: "Comment t'appelles-tu ?",
     name_modal_name: "Nom",
     name_modal_save: "Enregistrer",
+    email_modal_title: "Ton addresse email",
+    email_modal_name: "Email",
+    email_modal_save: "Enregistrer",
     profile_login: "S'identifier",
     profile_disconnect: "Se déconnecter",
     log_booking_created_title_suffix: "a ajouté une réservation",
@@ -201,8 +305,29 @@ static FR: Strings = Strings {
     log_booking_deleted_title_suffix: "a supprimé une réservation",
     navbar_link_calendar: "Réservations",
     navbar_link_log: "Journal",
+    notification_greeting: "Salut {recipient_name}!",
+    notification_will_stay_with_you_subject: "Nouvelle réservation sur vos dates",
+    notification_will_stay_with_you_body: concat!(
+        "{booker_name} vient d'enregistrer une réservation pour {guest_count} ",
+        "personne(s) et partagera son séjour avec toi du {start_date} au {end_date}.",
+    ),
+    notification_will_not_stay_with_you_anymore_subject: "Réservation supprimée sur vos dates",
+    notification_will_not_stay_with_you_anymore_body: "{booker_name} a supprimé sa réservation pour {guest_count} personne(s) du {start_date} au {end_date}.",
+    notification_signature: "Amicalement, le système de réservation",
+    notification_unsubscribe: "Clique sur le lien suivant si tu ne souhaites plus recevoir de notifications:",
+    verification_email_subject: "Vérification de l'adresse email",
+    verification_email_body: concat!(
+        "Clique sur le lien suivant pour vérifier ton addresse email:\n\n{verification_link}\n\n",
+        "Si tu n'as pas demandé à recevoir de notifications, tu peux ignorer ce message."
+    ),
+    email_verified_ok: "Email vérifié!",
+    email_verified_error: "Ce lien de vérification d'email ne semble pas valide…",
+    email_unsubscribed_ok: "C'est bon, nous n'enverrons plus d'emails!",
+    email_unsubscribed_error: "Ce lien de désabonnement d'email ne semble pas valide…",
+    email_you_can_close: "Tu peux maintenant fermer cette fenêtre.",
     month_formatter: &MONTH_FORMATTER_FR,
     month_day_formatter: &MONTH_DAY_FORMATTER_FR,
+    year_month_day_formatter: &YEAR_MONTH_DAY_FORMATTER_FR,
 };
 
 static EN: Strings = Strings {
@@ -211,6 +336,10 @@ static EN: Strings = Strings {
     index_hint_touch: "Tap a day to add a booking or view its details",
     index_hint_end_day: "Click the last day of your stay",
     index_hint_end_day_touch: "Tap the last day of your stay",
+    index_hint_booking_complete_info: "Booking saved!",
+    index_hint_booking_notifications_cta: "Get notified if someone books on this period",
+    index_hint_booking_notifications_pending: "Check your email, a verification link is waiting for you",
+    index_hint_booking_notifications_active: "You will be notified if someone books on this period",
     modal_close: "Close",
     day_popover_empty: "No bookings",
     day_popover_edit_button_title: "Edit",
@@ -236,6 +365,9 @@ static EN: Strings = Strings {
     name_modal_title: "What's your name?",
     name_modal_name: "Name",
     name_modal_save: "Save",
+    email_modal_title: "What's your email?",
+    email_modal_name: "Email",
+    email_modal_save: "Save",
     profile_login: "Login",
     profile_disconnect: "Disconnect",
     log_booking_created_title_suffix: "added a booking",
@@ -243,8 +375,29 @@ static EN: Strings = Strings {
     log_booking_deleted_title_suffix: "deleted a booking",
     navbar_link_calendar: "Bookings",
     navbar_link_log: "Log",
+    notification_greeting: "Hello {recipient_name}!",
+    notification_will_stay_with_you_subject: "New booking on your dates",
+    notification_will_stay_with_you_body: concat!(
+        "{booker_name} just added a new booking for {guest_count} people and will",
+        " stay with you from {start_date} to {end_date}.",
+    ),
+    notification_will_not_stay_with_you_anymore_subject: "Booking deleted on your dates",
+    notification_will_not_stay_with_you_anymore_body: "{booker_name} has deleted their booking for {guest_count} people from {start_date} to {end_date}.",
+    notification_signature: "Greetings, the booking system",
+    notification_unsubscribe: "Click the link below to unsubscribe:",
+    verification_email_subject: "Verify your email",
+    verification_email_body: concat!(
+        "Click the link below to verify your email address:\n\n{verification_link}\n\n",
+        "If you didn't request this, you can safely ignore this message."
+    ),
+    email_verified_ok: "Email verified!",
+    email_verified_error: "This verification link does not seem valid…",
+    email_unsubscribed_ok: "All good, we won't send emails anymore!",
+    email_unsubscribed_error: "This unsubscription link does not seem valid…",
+    email_you_can_close: "You can now close this window.",
     month_formatter: &MONTH_FORMATTER_EN,
     month_day_formatter: &MONTH_DAY_FORMATTER_EN,
+    year_month_day_formatter: &YEAR_MONTH_DAY_FORMATTER_EN,
 };
 
 #[cfg(test)]

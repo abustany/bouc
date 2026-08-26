@@ -21,14 +21,17 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::bookings::{
-    self, Booking, BookingId, BookingInput, ListBookingsFilter, Person, PersonId,
+    self, Booking, BookingId, BookingInput, BookingLogEntry, ListBookingsFilter,
+    NotificationSubscription, NotificationSubscriptionPayload, Person, PersonId,
 };
 use crate::bookings::{Repository, validate_person_name};
+use crate::notify::{self, Notifier};
 use crate::strings::Locale;
 use crate::views::{self, CALENDARS_ELEMENT_ID};
 
 struct InnerAppState {
-    repo: Box<dyn Repository>,
+    repo: Arc<dyn Repository>,
+    notifier: Arc<Notifier>,
     signed_cookies_key: Key,
     timezone: TimeZone,
     max_capacity: u32,
@@ -58,10 +61,11 @@ const HX_TRIGGER: &str = "hx-trigger";
 struct Assets;
 
 pub fn router(
-    repo: impl Repository + 'static,
+    repo: Arc<dyn Repository>,
     signed_cookies_key: Key,
     timezone: TimeZone,
     max_capacity: u32,
+    notifier: Arc<Notifier>,
 ) -> Router {
     Router::new()
         // start of app routes
@@ -71,12 +75,19 @@ pub fn router(
         .route("/logout", post(logout))
         .route("/bookings", post(save_booking))
         .route("/bookings/{id}", delete(delete_booking))
+        .route(
+            "/notifications/unsubscribe/{user_id}/{token}",
+            get(unsubscribe),
+        )
+        .route("/notifications/verify/{user_id}/{token}", get(verify_email))
+        .route("/notifications", post(save_notification))
         // end of app routes, any route *after* the route_layer call below does
         // not get the Vary header properly set to accept-language.
         .route_layer(middleware::from_fn(set_vary_accept_language))
         .route("/assets/{*path}", get(serve_asset))
         .with_state(AppState(Arc::new(InnerAppState {
-            repo: Box::new(repo),
+            repo,
+            notifier,
             signed_cookies_key,
             timezone,
             max_capacity,
@@ -172,12 +183,48 @@ fn get_current_user_id(jar: &SignedCookieJar) -> Option<PersonId> {
         .map(PersonId::new)
 }
 
+async fn get_notification_subscription_state(
+    repo: &dyn Repository,
+    user_id: Option<PersonId>,
+) -> anyhow::Result<views::NotificationSubscriptionState> {
+    let Some(user_id) = user_id else {
+        return Ok(views::NotificationSubscriptionState::None);
+    };
+
+    Ok(
+        match repo
+            .get_notification_subscription(user_id)
+            .await
+            .context("retrieving notification subscription")?
+        {
+            Some(NotificationSubscription {
+                payload: NotificationSubscriptionPayload::Pending { .. },
+                ..
+            }) => views::NotificationSubscriptionState::Pending,
+            Some(NotificationSubscription {
+                payload: NotificationSubscriptionPayload::Active { .. },
+                ..
+            }) => views::NotificationSubscriptionState::Active,
+            Some(NotificationSubscription {
+                payload: NotificationSubscriptionPayload::Disabled,
+                ..
+            }) => views::NotificationSubscriptionState::Disabled,
+            None => views::NotificationSubscriptionState::None,
+        },
+    )
+}
+
 async fn index(
     State(app): State<AppState>,
     jar: SignedCookieJar,
     locale: Locale,
 ) -> Result<Markup, AppError> {
     let now = jiff::Zoned::now();
+    let user_id = get_current_user_id(&jar);
+    let notification_subscription_state = get_notification_subscription_state(&*app.repo, user_id)
+        .await
+        .context("getting active notification subscription")?;
+
     Ok(views::index(views::IndexOpts {
         locale,
         start_year: now.year(),
@@ -187,7 +234,8 @@ async fn index(
             .context("listing bookings")?,
         max_capacity: app.max_capacity,
         people: &list_people(&*app.repo).await.context("listing people")?,
-        user_id: get_current_user_id(&jar),
+        user_id,
+        notification_subscription_state,
     }))
 }
 
@@ -196,11 +244,17 @@ async fn booking_log(
     jar: SignedCookieJar,
     locale: Locale,
 ) -> Result<Markup, AppError> {
+    let user_id = get_current_user_id(&jar);
+    let notification_subscription_state = get_notification_subscription_state(&*app.repo, user_id)
+        .await
+        .context("getting active notification subscription")?;
+
     Ok(views::booking_log(&views::BookingLogOpts {
         locale,
         tz: app.timezone.clone(),
         people: &list_people(&*app.repo).await.context("listing people")?,
-        user_id: get_current_user_id(&jar),
+        user_id,
+        notification_subscription_state,
         log_entries: app
             .repo
             .list_booking_log(None)
@@ -238,13 +292,17 @@ async fn login(
         .http_only(true)
         .build();
     let updated_jar = jar.add(user_id_cookie);
+    let notification_subscription_state =
+        get_notification_subscription_state(&*app.repo, Some(user.id))
+            .await
+            .context("getting active notification subscription")?;
 
     if is_htmx(&headers) {
         let logged_in_info = oob_logged_in_info(locale, Some(&user)).await?;
         Ok((
             [(
                 HX_TRIGGER,
-                serde_json::to_string(&json!({"user-logged-in": {"userId": &user_id_str}}))
+                serde_json::to_string(&json!({"user-logged-in": {"userId": &user_id_str, "notificationSubscriptionState": &notification_subscription_state}}))
                     .expect("error marshalling user-logged-in event data"),
             )],
             updated_jar,
@@ -341,9 +399,9 @@ async fn save_booking(
         None
     };
 
-    match booking_id {
+    let log_entry = match booking_id {
         Some(id) => match app.repo.update_booking(id, creator_id, &booking).await {
-            Ok(_) => {}
+            Ok((_, entry)) => entry,
             Err(bookings::UpdateBookingError::NotFound) => {
                 return Ok((StatusCode::NOT_FOUND, "booking not found").into_response());
             }
@@ -353,9 +411,12 @@ async fn save_booking(
             app.repo
                 .create_booking(&booking)
                 .await
-                .context("creating booking")?;
+                .context("creating booking")?
+                .1
         }
-    }
+    };
+
+    notify_booking_changed(&app.notifier, log_entry);
 
     if is_htmx(&headers) {
         let calendars = oob_calendars(&*app.repo, locale).await?;
@@ -375,15 +436,171 @@ async fn delete_booking(
         return Ok((StatusCode::UNAUTHORIZED, "unauthorized").into_response());
     };
 
-    match app.repo.delete_booking(BookingId::new(id), user_id).await {
-        Ok(_) => {}
+    let log_entry = match app.repo.delete_booking(BookingId::new(id), user_id).await {
+        Ok(entry) => entry,
         Err(bookings::DeleteBookingError::NotFound) => {
             return Ok((StatusCode::NOT_FOUND, "booking not found").into_response());
         }
         Err(e) => return Err(AppError::from(e)),
-    }
+    };
+
+    notify_booking_changed(&app.notifier, log_entry);
 
     Ok(oob_calendars(&*app.repo, locale).await.into_response())
+}
+
+async fn unsubscribe(
+    State(app): State<AppState>,
+    locale: Locale,
+    Path((user_id, token)): Path<(PersonId, String)>,
+) -> Result<Markup, AppError> {
+    let is_valid = matches!(
+        app
+        .repo
+        .get_notification_subscription(user_id)
+        .await
+        .context("retrieving notification subscription")?
+        .map(|s| s.payload),
+        Some(NotificationSubscriptionPayload::Active {
+            unsubscribe_token, ..
+        }) if unsubscribe_token == token
+    );
+
+    if is_valid {
+        app.repo
+            .save_notification_subscription(&NotificationSubscription {
+                person_id: user_id,
+                payload: NotificationSubscriptionPayload::Disabled,
+            })
+            .await
+            .context("saving notification subscription")?;
+    }
+
+    Ok(views::email_unsubscribed(locale, is_valid))
+}
+
+async fn verify_email(
+    State(app): State<AppState>,
+    locale: Locale,
+    Path((user_id, token)): Path<(PersonId, String)>,
+) -> Result<Markup, AppError> {
+    let email = match app
+        .repo
+        .get_notification_subscription(user_id)
+        .await
+        .context("retrieving notification subscription")?
+        .map(|s| s.payload)
+    {
+        Some(NotificationSubscriptionPayload::Pending {
+            email,
+            verification_token,
+            ..
+        }) if verification_token == token => Some(email),
+        _ => None,
+    };
+
+    if let Some(ref email) = email {
+        app.repo
+            .save_notification_subscription(&NotificationSubscription {
+                person_id: user_id,
+                payload: NotificationSubscriptionPayload::Active {
+                    email: email.clone(),
+                    locale: locale.strings().lang.to_owned(),
+                    unsubscribe_token: notify::generate_verification_token(),
+                },
+            })
+            .await
+            .context("saving notification subscription")?;
+    }
+
+    Ok(views::email_verified(locale, email.is_some()))
+}
+
+#[derive(Deserialize)]
+struct SaveNotificationForm {
+    email: String,
+}
+
+async fn save_notification(
+    State(app): State<AppState>,
+    jar: SignedCookieJar,
+    headers: HeaderMap,
+    locale: Locale,
+    Form(form): Form<SaveNotificationForm>,
+) -> Result<Response, AppError> {
+    let Some(user_id) = get_current_user_id(&jar) else {
+        return Ok((StatusCode::UNAUTHORIZED, "unauthorized").into_response());
+    };
+
+    let Ok(email) = form.email.parse::<lettre::Address>().map(|a| a.to_string()) else {
+        return Ok((StatusCode::BAD_REQUEST, "invalid email").into_response());
+    };
+
+    let subscription_state = match app
+        .repo
+        .get_notification_subscription(user_id)
+        .await
+        .context("retrieving notification subscription")?
+        .map(|s| s.payload)
+    {
+        Some(NotificationSubscriptionPayload::Pending {
+            email,
+            verification_token,
+        }) => {
+            app.notifier
+                .send_verification_email(user_id, &email, locale, &verification_token)
+                .await
+                .context("resending verification email")?;
+            "pending"
+        }
+        Some(NotificationSubscriptionPayload::Active { .. }) => {
+            // do nothing
+            "active"
+        }
+        Some(NotificationSubscriptionPayload::Disabled) | None => {
+            let verification_token = notify::generate_verification_token();
+            app.repo
+                .save_notification_subscription(&NotificationSubscription {
+                    person_id: user_id,
+                    payload: NotificationSubscriptionPayload::Pending {
+                        email: email.clone(),
+                        verification_token: verification_token.clone(),
+                    },
+                })
+                .await
+                .context("saving notification subscription")?;
+            app.notifier
+                .send_verification_email(user_id, &email, locale, &verification_token)
+                .await
+                .context("sending verification email")?;
+            "pending"
+        }
+    };
+
+    if is_htmx(&headers) {
+        Ok((
+            [(
+                HX_TRIGGER,
+                serde_json::to_string(
+                    &json!({"notification-subscription-state-changed": {"state": subscription_state}}),
+                )
+                .expect("error marshalling notification-subscription-state-changed event data"),
+            )],
+            StatusCode::OK,
+        )
+            .into_response())
+    } else {
+        Ok(Redirect::to("/").into_response())
+    }
+}
+
+fn notify_booking_changed(notifier: &Arc<Notifier>, entry: BookingLogEntry) {
+    let notifier = notifier.clone();
+    tokio::spawn(async move {
+        if let Err(err) = notifier.notify_booking_changed(&entry).await {
+            eprintln!("error sending booking notifications: {err:#}");
+        }
+    });
 }
 
 async fn oob_calendars(repo: &dyn Repository, locale: Locale) -> Result<Markup, AppError> {

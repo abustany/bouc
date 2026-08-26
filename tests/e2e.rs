@@ -25,12 +25,12 @@ mod testing_library;
 use testing_library::{
     NameMatch, POLL_INTERVAL, User, WAIT_TIMEOUT, eval, screen, texts_in, value, value_missing,
     wait_for_animations, wait_for_attribute, wait_for_count, wait_for_count_in, wait_for_text,
-    within,
+    wait_for_visible_text, within,
 };
 
 use bouc::sqlite::MEMORY_DB;
-use bouc::start;
 use bouc::strings::{Locale, Strings};
+use bouc::{StartOptions, email, start};
 
 const LOGGED_IN_INFO: &str = "#logged-in-info";
 
@@ -41,6 +41,7 @@ const MAX_CAPACITY: u32 = 6;
 enum Modal {
     Booking,
     Login,
+    Email,
 }
 
 impl Modal {
@@ -48,6 +49,7 @@ impl Modal {
         match self {
             Self::Booking => &["New booking", "Edit booking"],
             Self::Login => &["What's your name?"],
+            Self::Email => &["What's your email?"],
         }
     }
 }
@@ -145,15 +147,51 @@ impl BrowserProfile {
 
 #[tokio::test]
 async fn books_edits_and_deletes_a_booking_on_desktop() -> Result<()> {
-    run_scenario(BrowserProfile::Desktop).await
+    run_scenario(BrowserProfile::Desktop, async |session| {
+        scenario(&session.client, session.addr, session.profile).await
+    })
+    .await
 }
 
 #[tokio::test]
 async fn books_edits_and_deletes_a_booking_on_mobile() -> Result<()> {
-    run_scenario(BrowserProfile::Mobile).await
+    run_scenario(BrowserProfile::Mobile, async |session| {
+        scenario(&session.client, session.addr, session.profile).await
+    })
+    .await
 }
 
-async fn run_scenario(profile: BrowserProfile) -> Result<()> {
+#[tokio::test]
+async fn subscribes_to_notifications() -> Result<()> {
+    run_scenario(BrowserProfile::Desktop, notifications).await
+}
+
+/// A server, a browser and the emails the server sent.
+struct Session {
+    _driver: Chromedriver,
+    client: Client,
+    addr: SocketAddr,
+    emails: email::CaptureSender,
+    profile: BrowserProfile,
+}
+
+impl Session {
+    async fn goto(&self, url: &str) -> Result<()> {
+        self.client
+            .goto(url)
+            .await
+            .with_context(|| format!("loading {url}"))
+    }
+
+    fn index_url(&self) -> String {
+        format!("http://{}/", self.addr)
+    }
+}
+
+async fn run_scenario(
+    profile: BrowserProfile,
+    scenario: impl AsyncFnOnce(&Session) -> Result<()>,
+) -> Result<()> {
     let browser = std::env::var("CHROME_BINARY").ok();
 
     if !chromedriver_available() {
@@ -164,14 +202,21 @@ async fn run_scenario(profile: BrowserProfile) -> Result<()> {
         return Ok(());
     }
 
-    let addr = serve().await?;
+    let (addr, emails) = serve().await?;
     let driver = Chromedriver::start().await?;
     let client = new_client(driver.port, browser.as_deref(), profile).await?;
+    let session = Session {
+        _driver: driver,
+        client,
+        addr,
+        emails,
+        profile,
+    };
 
-    let result = scenario(&client, addr, profile)
+    let result = scenario(&session)
         .await
         .with_context(|| format!("running the {profile:?} scenario"));
-    client.close().await.context("closing browser")?;
+    session.client.close().await.context("closing browser")?;
     result
 }
 
@@ -414,6 +459,115 @@ async fn booking_with_a_session(client: &Client, profile: BrowserProfile) -> Res
     Ok(())
 }
 
+/// Walks a subscription through its states: the hint offers to subscribe, then
+/// says the verification email is on its way, then that notifications are on,
+/// and finally shows nothing once the unsubscribe link has been followed.
+/// Subscribing again after that is not possible yet.
+async fn notifications(session: &Session) -> Result<()> {
+    let s = Locale::En.strings();
+    let profile = session.profile;
+    let client = &session.client;
+    let user = User::new(client);
+
+    session.goto(&session.index_url()).await?;
+    open_login_modal(client, profile).await?;
+    log_in(client, "Alice").await?;
+    book(client, &booking_day(10)?, &booking_day(12)?, profile).await?;
+
+    let subscribe = within(client, &notifications_hint(client).await?)
+        .find_by_role(
+            "button",
+            Some(NameMatch::Contains(s.index_hint_booking_notifications_cta)),
+        )
+        .await?;
+    user.click(&subscribe).await?;
+
+    let email_modal = find_modal(client, Modal::Email).await?;
+    let email_input = within(client, &email_modal)
+        .find_by_role("textbox", Some(NameMatch::Contains(s.email_modal_name)))
+        .await?;
+    user.fill(&email_input, "alice@example.com").await?;
+    submit(client, Modal::Email).await?;
+    wait_for_modal_to_close(client, Modal::Email).await?;
+    wait_for_notifications_hint(client, s.index_hint_booking_notifications_pending).await?;
+
+    session
+        .goto(&wait_for_link(session, "verify").await?)
+        .await?;
+    session.goto(&session.index_url()).await?;
+    book(client, &booking_day(20)?, &booking_day(21)?, profile).await?;
+    wait_for_notifications_hint(client, s.index_hint_booking_notifications_active).await?;
+
+    // only a booking made by somebody else sends a notification, and only a
+    // notification carries the unsubscribe link
+    log_out(client, s.profile_login, profile).await?;
+    open_login_modal(client, profile).await?;
+    log_in(client, "Bob").await?;
+    book(client, &booking_day(11)?, &booking_day(11)?, profile).await?;
+
+    session
+        .goto(&wait_for_link(session, "unsubscribe").await?)
+        .await?;
+    session.goto(&session.index_url()).await?;
+    log_out(client, s.profile_login, profile).await?;
+    open_login_modal(client, profile).await?;
+    log_in(client, "Alice").await?;
+    book(client, &booking_day(25)?, &booking_day(26)?, profile).await?;
+    wait_for_notifications_hint(client, "").await
+}
+
+/// The subscription hints sit in the bar that shows up once a booking is
+/// saved.
+async fn notifications_hint(client: &Client) -> Result<Element> {
+    screen(client)
+        .find_by_role("region", Some(NameMatch::Exact("Notifications")))
+        .await
+}
+
+async fn wait_for_notifications_hint(client: &Client, text: &str) -> Result<()> {
+    let hint = notifications_hint(client).await?;
+    wait_for_visible_text(client, &hint, text).await
+}
+
+/// The notification emails go out from a task spawned while the booking is
+/// saved, so their links show up shortly after.
+async fn wait_for_link(session: &Session, kind: &str) -> Result<String> {
+    let prefix = format!("http://{}/notifications/{kind}/", session.addr);
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+
+    loop {
+        let messages = session.emails.messages().await;
+        let link = messages
+            .iter()
+            .flat_map(|message| message.body.split_whitespace())
+            .find(|word| word.starts_with(&prefix));
+
+        if let Some(link) = link {
+            return Ok(link.to_owned());
+        }
+        if Instant::now() >= deadline {
+            bail!("timed out waiting for an email with a {kind} link");
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+async fn book(client: &Client, start: &str, end: &str, profile: BrowserProfile) -> Result<()> {
+    pick_days(client, start, end, profile).await?;
+    let modal = find_modal(client, Modal::Booking).await?;
+    let guest_count = within(client, &modal)
+        .find_by_role(
+            "spinbutton",
+            Some(NameMatch::Contains(
+                Locale::En.strings().booking_modal_guest_count,
+            )),
+        )
+        .await?;
+    User::new(client).fill(&guest_count, "1").await?;
+    submit(client, Modal::Booking).await?;
+    wait_for_modal_to_close(client, Modal::Booking).await
+}
+
 async fn log_in(client: &Client, name: &str) -> Result<()> {
     let modal = find_modal(client, Modal::Login).await?;
     let input = within(client, &modal)
@@ -526,18 +680,30 @@ fn booking_day(day: i8) -> Result<String> {
         .to_string())
 }
 
-async fn serve() -> Result<SocketAddr> {
+async fn serve() -> Result<(SocketAddr, email::CaptureSender)> {
     let port = free_port()?;
     let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
     let signed_cookie_key = vec![0u8; 64];
+    let emails = email::CaptureSender::new();
+    let email_sender = emails.clone();
 
     tokio::spawn(async move {
-        start(MEMORY_DB, addr, &signed_cookie_key, Some(TimeZone::UTC), 6)
-            .await
-            .expect("serving");
+        start(StartOptions {
+            db_path: MEMORY_DB,
+            listen_address: addr,
+            signed_cookie_key: &signed_cookie_key,
+            timezone: Some(TimeZone::UTC),
+            max_capacity: 6,
+            email_sender: Box::new(email_sender),
+            notifications_from_address: "Bouc <bouc@example.com>",
+            default_locale: Locale::En,
+            base_url: &format!("http://{addr}"),
+        })
+        .await
+        .expect("serving");
     });
 
-    Ok(addr)
+    Ok((addr, emails))
 }
 
 fn chromedriver_available() -> bool {

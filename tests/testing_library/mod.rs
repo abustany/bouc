@@ -334,6 +334,16 @@ pub async fn wait_for_count_in(
     .await
 }
 
+pub async fn wait_for_visible_text(client: &Client, element: &Element, text: &str) -> Result<()> {
+    wait_for(
+        client,
+        &format!("element to show {text:?}"),
+        "return arguments[0].innerText.includes(arguments[1]);",
+        vec![json!(element), json!(text)],
+    )
+    .await
+}
+
 pub async fn wait_for_text(client: &Client, selector: &str, text: &str) -> Result<()> {
     wait_for(
         client,
