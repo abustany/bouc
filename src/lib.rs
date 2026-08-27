@@ -3,6 +3,7 @@ use std::path::Path;
 use crate::sqlite::SqliteRepository;
 
 pub mod bookings;
+mod interpolate;
 pub mod sqlite;
 pub mod strings;
 mod views;
