@@ -1,3 +1,10 @@
+use std::sync::LazyLock;
+
+use icu::calendar::{Date as IcuDate, Iso};
+use icu::datetime::DateTimeFormatter;
+use icu::datetime::fieldsets::{M, MD};
+use icu::locale::locale;
+use jiff_icu::ConvertInto;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -89,6 +96,10 @@ pub struct Strings {
     pub log_booking_deleted_title_suffix: &'static str,
     pub navbar_link_calendar: &'static str,
     pub navbar_link_log: &'static str,
+    #[serde(skip)]
+    month_formatter: &'static LazyLock<DateTimeFormatter<M>>,
+    #[serde(skip)]
+    month_day_formatter: &'static LazyLock<DateTimeFormatter<MD>>,
 }
 
 impl Strings {
@@ -112,7 +123,45 @@ impl Strings {
     pub fn log_booking_deleted_title(&self, actor_name: &str) -> String {
         format!("{actor_name} {}", self.log_booking_deleted_title_suffix)
     }
+
+    pub fn format_date_month_name(&self, d: impl ConvertInto<IcuDate<Iso>>) -> String {
+        ucfirst(&self.month_formatter.format(&d.convert_into()).to_string())
+    }
+
+    pub fn format_date_month_day(&self, d: impl ConvertInto<IcuDate<Iso>>) -> String {
+        self.month_day_formatter
+            .format(&d.convert_into())
+            .to_string()
+    }
 }
+
+fn ucfirst(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        None => String::new(),
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+    }
+}
+
+static MONTH_FORMATTER_FR: LazyLock<DateTimeFormatter<M>> = LazyLock::new(|| {
+    DateTimeFormatter::try_new(locale!("fr").into(), M::long())
+        .expect("failed to build French month formatter")
+});
+
+static MONTH_FORMATTER_EN: LazyLock<DateTimeFormatter<M>> = LazyLock::new(|| {
+    DateTimeFormatter::try_new(locale!("en").into(), M::long())
+        .expect("failed to build English month formatter")
+});
+
+static MONTH_DAY_FORMATTER_FR: LazyLock<DateTimeFormatter<MD>> = LazyLock::new(|| {
+    DateTimeFormatter::try_new(locale!("fr").into(), MD::long())
+        .expect("failed to build French day formatter")
+});
+
+static MONTH_DAY_FORMATTER_EN: LazyLock<DateTimeFormatter<MD>> = LazyLock::new(|| {
+    DateTimeFormatter::try_new(locale!("en").into(), MD::long())
+        .expect("failed to build English day formatter")
+});
 
 static FR: Strings = Strings {
     lang: "fr",
@@ -152,6 +201,8 @@ static FR: Strings = Strings {
     log_booking_deleted_title_suffix: "a supprimé une réservation",
     navbar_link_calendar: "Réservations",
     navbar_link_log: "Journal",
+    month_formatter: &MONTH_FORMATTER_FR,
+    month_day_formatter: &MONTH_DAY_FORMATTER_FR,
 };
 
 static EN: Strings = Strings {
@@ -192,6 +243,8 @@ static EN: Strings = Strings {
     log_booking_deleted_title_suffix: "deleted a booking",
     navbar_link_calendar: "Bookings",
     navbar_link_log: "Log",
+    month_formatter: &MONTH_FORMATTER_EN,
+    month_day_formatter: &MONTH_DAY_FORMATTER_EN,
 };
 
 #[cfg(test)]

@@ -1,14 +1,8 @@
 use std::collections::HashMap;
-use std::sync::LazyLock;
 
-use icu::calendar::{Date as IcuDate, Iso};
-use icu::datetime::DateTimeFormatter;
-use icu::datetime::fieldsets::{M, MD};
-use icu::locale::locale;
 use jiff::Zoned;
 use jiff::civil::date;
 use jiff::tz::TimeZone;
-use jiff_icu::ConvertInto;
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use serde::Serialize;
 
@@ -223,52 +217,6 @@ pub fn calendars(opts: &CalendarsOpts) -> Markup {
     }
 }
 
-static MONTH_FORMATTER_FR: LazyLock<DateTimeFormatter<M>> = LazyLock::new(|| {
-    DateTimeFormatter::try_new(locale!("fr").into(), M::long())
-        .expect("failed to build French month formatter")
-});
-
-static MONTH_FORMATTER_EN: LazyLock<DateTimeFormatter<M>> = LazyLock::new(|| {
-    DateTimeFormatter::try_new(locale!("en").into(), M::long())
-        .expect("failed to build English month formatter")
-});
-
-fn ucfirst(s: &str) -> String {
-    let mut c = s.chars();
-    match c.next() {
-        None => String::new(),
-        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-    }
-}
-
-fn month_name(locale: Locale, d: &jiff::civil::Date) -> String {
-    let formatter = match locale {
-        Locale::Fr => &MONTH_FORMATTER_FR,
-        Locale::En => &MONTH_FORMATTER_EN,
-    };
-    let icu_date: IcuDate<Iso> = (*d).convert_into();
-    ucfirst(&formatter.format(&icu_date).to_string())
-}
-
-static DAY_FORMATTER_FR: LazyLock<DateTimeFormatter<MD>> = LazyLock::new(|| {
-    DateTimeFormatter::try_new(locale!("fr").into(), MD::long())
-        .expect("failed to build French day formatter")
-});
-
-static DAY_FORMATTER_EN: LazyLock<DateTimeFormatter<MD>> = LazyLock::new(|| {
-    DateTimeFormatter::try_new(locale!("en").into(), MD::long())
-        .expect("failed to build English day formatter")
-});
-
-fn day_name(locale: Locale, d: &(impl Copy + ConvertInto<IcuDate<Iso>>)) -> String {
-    let formatter = match locale {
-        Locale::Fr => &DAY_FORMATTER_FR,
-        Locale::En => &DAY_FORMATTER_EN,
-    };
-    let icu_date: IcuDate<Iso> = (*d).convert_into();
-    formatter.format(&icu_date).to_string()
-}
-
 pub struct CalendarOpts<'a, 'b> {
     pub locale: Locale,
     pub year: i16,
@@ -330,7 +278,7 @@ fn calendar(opts: &CalendarOpts) -> Markup {
           .grid .grid-flow-row .content-start
           aria-labelledby=(month_name_id)
         {
-            p id=(month_name_id) .text-center .font-semibold {(month_name(opts.locale, &first_month_day)) " " (opts.year)}
+            p id=(month_name_id) .text-center .font-semibold {(opts.locale.strings().format_date_month_name(first_month_day)) " " (opts.year)}
             div
             .grid ."grid-cols-[repeat(7,2.5rem)]"
             {
@@ -338,7 +286,7 @@ fn calendar(opts: &CalendarOpts) -> Markup {
                     @let style = if day == 1 { Some(format!("grid-column-start: {};", first_month_day.weekday().to_monday_one_offset())) } else { None };
                     @let date = date(opts.year, opts.month, day);
                     @let yyyymmdd = date_to_yyyymmdd(&date);
-                    @let day_name = day_name(opts.locale, &date);
+                    @let day_name = opts.locale.strings().format_date_month_day(date);
                     @let booking_status = if guest_count == 0 {
                         opts.locale.strings().day_popover_empty.to_owned()
                     } else if guest_count >= opts.max_capacity {
@@ -417,7 +365,7 @@ fn day_popover(
     let s = locale.strings();
     let yyyymmdd = date_to_yyyymmdd(&day);
     let open_condition = format!("shouldShowPopoverForDay('{yyyymmdd}')");
-    let display_day = day_name(locale, &day);
+    let display_day = s.format_date_month_day(day);
     let title_id = format!("day-popover-title-{yyyymmdd}");
 
     html! {
@@ -506,9 +454,9 @@ fn day_popover(
                             };
 
                             li {
-                                (day_name(locale, &b.start_date))
+                                (s.format_date_month_day(b.start_date))
                                 " → "
-                                (day_name(locale, &b.end_date))
+                                (s.format_date_month_day(b.end_date))
                                 " · "
                                 (creator_name)
                                 " ("
@@ -751,11 +699,12 @@ struct BookingLogItemOpts {
 
 impl BookingLogItemOpts {
     fn format_booking_details(locale: Locale, b: &Booking) -> String {
+        let s = locale.strings();
         format!(
             "{} → {}, {}",
-            day_name(locale, &b.start_date),
-            day_name(locale, &b.end_date),
-            locale.strings().guests(b.guest_count)
+            s.format_date_month_day(b.start_date),
+            s.format_date_month_day(b.end_date),
+            s.guests(b.guest_count)
         )
     }
 
@@ -767,10 +716,9 @@ impl BookingLogItemOpts {
     ) -> Self {
         let s = locale.strings();
         let actor_name = get_person_name(locale, people, e.creator_id).to_string();
-        let date = day_name(
-            locale,
-            &<Zoned as Into<jiff::civil::Date>>::into(e.create_time.to_zoned(tz)),
-        );
+        let date = s.format_date_month_day(<Zoned as Into<jiff::civil::Date>>::into(
+            e.create_time.to_zoned(tz),
+        ));
 
         match &e.payload {
             BookingLogEntryPayload::BookingCreated { booking } => Self {
