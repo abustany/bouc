@@ -144,6 +144,11 @@ pub enum NotificationSubscriptionPayload {
     Disabled, // user declined notifications
 }
 
+pub enum ListBookingsFilter {
+    EndsAfter(Date),
+    IntersectsRange { start: Date, end: Date },
+}
+
 #[async_trait::async_trait]
 pub trait Repository: Send + Sync {
     /// Persist a person identified by their name.
@@ -176,7 +181,7 @@ pub trait Repository: Send + Sync {
     ) -> Result<(Booking, BookingLogEntry), UpdateBookingError>;
 
     /// List all bookings after a given date.
-    async fn list_bookings(&self, after: Date) -> Result<Vec<Booking>>;
+    async fn list_bookings(&self, filter: ListBookingsFilter) -> Result<Vec<Booking>>;
 
     /// Delete a booking.
     async fn delete_booking(

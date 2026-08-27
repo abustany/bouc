@@ -20,7 +20,9 @@ use rust_embed::RustEmbed;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::bookings::{self, Booking, BookingId, BookingInput, Person, PersonId};
+use crate::bookings::{
+    self, Booking, BookingId, BookingInput, ListBookingsFilter, Person, PersonId,
+};
 use crate::bookings::{Repository, validate_person_name};
 use crate::strings::Locale;
 use crate::views::{self, CALENDARS_ELEMENT_ID};
@@ -143,9 +145,13 @@ impl<S: Send + Sync> FromRequestParts<S> for Locale {
 }
 
 async fn list_bookings(repo: &dyn Repository, now: &jiff::Zoned) -> anyhow::Result<Vec<Booking>> {
-    repo.list_bookings(jiff::civil::date(now.year(), now.month(), 1))
-        .await
-        .context("listing bookings")
+    repo.list_bookings(ListBookingsFilter::EndsAfter(jiff::civil::date(
+        now.year(),
+        now.month(),
+        1,
+    )))
+    .await
+    .context("listing bookings")
 }
 
 async fn list_people(

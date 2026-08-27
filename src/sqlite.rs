@@ -8,7 +8,8 @@ use tokio_rusqlite::{Connection, rusqlite};
 
 use crate::bookings::{
     Booking, BookingId, BookingInput, BookingLogEntry, BookingLogEntryId, BookingLogEntryPayload,
-    DeleteBookingError, NotificationSubscription, Person, PersonId, Repository, UpdateBookingError,
+    DeleteBookingError, ListBookingsFilter, NotificationSubscription, Person, PersonId, Repository,
+    UpdateBookingError,
 };
 
 const BOOKING_LOG_PAGE_SIZE: u32 = 50;
@@ -250,16 +251,23 @@ impl Repository for SqliteRepository {
             .ok_or(UpdateBookingError::NotFound)
     }
 
-    async fn list_bookings(&self, after: jiff::civil::Date) -> anyhow::Result<Vec<Booking>> {
-        let after = format_date(&after);
+    async fn list_bookings(&self, filter: ListBookingsFilter) -> anyhow::Result<Vec<Booking>> {
+        let (condition, params) = match filter {
+            ListBookingsFilter::EndsAfter(date) => ("end_date >= ?1", vec![format_date(&date)]),
+            ListBookingsFilter::IntersectsRange { start, end } => (
+                "start_date <= ?2 AND end_date >= ?1",
+                vec![format_date(&start), format_date(&end)],
+            ),
+        };
+
         self.conn
             .call(move |conn| -> rusqlite::Result<Vec<Booking>> {
-                let mut stmt = conn.prepare(
+                let mut stmt = conn.prepare(&format!(
                     "SELECT id, start_date, end_date, creator_id, guest_count \
-                     FROM bookings WHERE end_date >= ?1 ORDER BY start_date, id",
-                )?;
+                     FROM bookings WHERE {condition} ORDER BY start_date, id"
+                ))?;
                 let bookings = stmt
-                    .query_map(rusqlite::params![after], |row| {
+                    .query_map(rusqlite::params_from_iter(params), |row| {
                         Ok(Booking {
                             id: BookingId::new(parse_u32(row.get(0)?)?),
                             start_date: parse_date(&row.get::<_, String>(1)?)?,
@@ -571,12 +579,44 @@ mod tests {
             .await
             .unwrap();
 
-        let bookings = repo.list_bookings(date(2026, 7, 27)).await.unwrap();
+        let bookings = repo
+            .list_bookings(ListBookingsFilter::EndsAfter(date(2026, 7, 27)))
+            .await
+            .unwrap();
         let ids: Vec<_> = bookings.iter().map(|b| b.id).collect();
         assert_eq!(ids, vec![ongoing.id, later.id]);
         assert!(!ids.contains(&past.id));
         assert_eq!(bookings[0].start_date, date(2026, 7, 20));
         assert_eq!(bookings[0].end_date, date(2026, 7, 28));
+
+        let bookings = repo
+            .list_bookings(ListBookingsFilter::IntersectsRange {
+                start: date(2026, 7, 25),
+                end: date(2026, 7, 27),
+            })
+            .await
+            .unwrap();
+        let ids: Vec<_> = bookings.iter().map(|b| b.id).collect();
+        assert_eq!(ids, vec![ongoing.id]);
+
+        let bookings = repo
+            .list_bookings(ListBookingsFilter::IntersectsRange {
+                start: date(2026, 7, 28),
+                end: date(2026, 8, 5),
+            })
+            .await
+            .unwrap();
+        let ids: Vec<_> = bookings.iter().map(|b| b.id).collect();
+        assert_eq!(ids, vec![ongoing.id, later.id]);
+
+        let bookings = repo
+            .list_bookings(ListBookingsFilter::IntersectsRange {
+                start: date(2026, 7, 29),
+                end: date(2026, 8, 4),
+            })
+            .await
+            .unwrap();
+        assert!(bookings.is_empty());
     }
 
     #[tokio::test]
@@ -590,14 +630,25 @@ mod tests {
             repo.delete_booking(created.id, other_person.id).await,
             Err(DeleteBookingError::NotFound)
         ));
-        assert!(repo.list_bookings(start_date()).await.unwrap().len() == 1);
+        assert!(
+            repo.list_bookings(ListBookingsFilter::EndsAfter(start_date()))
+                .await
+                .unwrap()
+                .len()
+                == 1
+        );
 
         let log_entry = repo.delete_booking(created.id, person.id).await.unwrap();
         assert!(matches!(
             log_entry.payload,
             BookingLogEntryPayload::BookingDeleted { booking } if booking.id == created.id
         ));
-        assert!(repo.list_bookings(start_date()).await.unwrap().is_empty());
+        assert!(
+            repo.list_bookings(ListBookingsFilter::EndsAfter(start_date()))
+                .await
+                .unwrap()
+                .is_empty()
+        );
 
         assert!(matches!(
             repo.delete_booking(created.id, person.id).await,
@@ -632,7 +683,10 @@ mod tests {
             Err(UpdateBookingError::NotFound)
         ));
 
-        let bookings = repo.list_bookings(start_date()).await.unwrap();
+        let bookings = repo
+            .list_bookings(ListBookingsFilter::EndsAfter(start_date()))
+            .await
+            .unwrap();
         assert_eq!(bookings[0].guest_count, 3);
         assert_eq!(bookings[0].creator_id, person.id);
         assert_eq!(repo.list_booking_log(None).await.unwrap().len(), 1);
