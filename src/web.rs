@@ -419,7 +419,7 @@ async fn save_booking(
     notify_booking_changed(&app.notifier, log_entry);
 
     if is_htmx(&headers) {
-        let calendars = oob_calendars(&*app.repo, locale).await?;
+        let calendars = oob_calendars(&*app.repo, locale, app.max_capacity).await?;
         Ok(([(HX_TRIGGER, "booking-saved")], calendars).into_response())
     } else {
         Ok(Redirect::to("/").into_response())
@@ -446,7 +446,9 @@ async fn delete_booking(
 
     notify_booking_changed(&app.notifier, log_entry);
 
-    Ok(oob_calendars(&*app.repo, locale).await.into_response())
+    Ok(oob_calendars(&*app.repo, locale, app.max_capacity)
+        .await
+        .into_response())
 }
 
 async fn unsubscribe(
@@ -603,7 +605,11 @@ fn notify_booking_changed(notifier: &Arc<Notifier>, entry: BookingLogEntry) {
     });
 }
 
-async fn oob_calendars(repo: &dyn Repository, locale: Locale) -> Result<Markup, AppError> {
+async fn oob_calendars(
+    repo: &dyn Repository,
+    locale: Locale,
+    max_capacity: u32,
+) -> Result<Markup, AppError> {
     let now = jiff::Zoned::now();
     Ok(views::calendars(&views::CalendarsOpts {
         id: Some(CALENDARS_ELEMENT_ID.to_string()),
@@ -613,7 +619,7 @@ async fn oob_calendars(repo: &dyn Repository, locale: Locale) -> Result<Markup, 
         sorted_bookings: &list_bookings(repo, &now)
             .await
             .context("listing bookings")?,
-        max_capacity: 6,
+        max_capacity,
         people: &list_people(repo).await.context("listing people")?,
         hx_swap_oob: true,
     }))
