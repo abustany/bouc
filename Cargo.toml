@@ -14,7 +14,7 @@ hex = "0.4.3"
 icu = { version = "2.2.0", features = ["sync"] }
 jiff = { version = "0.2.34", features = ["serde"] }
 jiff-icu = "0.2.2"
-lettre = "0.11.23"
+lettre = { version = "0.11.23", default-features = false, features = ["builder", "smtp-transport", "hostname", "tokio1", "native-tls", "tokio1-native-tls"] }
 maud = { version = "0.27.0", features = ["axum"] }
 rand = "0.8.7"
 rust-embed = { version = "8.12.0", features = ["mime-guess"] }
@@ -24,8 +24,11 @@ serde_urlencoded = "0.7.1"
 thiserror = "2.0.19"
 tokio = { version = "1.53.1", features = ["macros", "net", "rt-multi-thread"] }
 tokio-rusqlite = { version = "0.7.0", features = ["bundled"] }
+url = "2.5.8"
 
 [dev-dependencies]
 # no TLS: the e2e test only talks to a local chromedriver over plain HTTP
 fantoccini = { version = "0.22.1", default-features = false }
 hyper-util = { version = "0.1.3", features = ["client-legacy", "tokio"] }
+# no TLS: the e2e test only talks to a local mailpit over plain HTTP
+reqwest = { version = "0.13.4", default-features = false, features = ["json"] }

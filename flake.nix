@@ -68,7 +68,7 @@
           bouc-e2e = craneLib.cargoTest ( craneCommonArgs // {
             inherit cargoArtifacts;
             cargoTestExtraArgs = "--test e2e";
-            nativeBuildInputs = craneCommonArgs.nativeBuildInputs ++ [ chromedriver chromium ];
+            nativeBuildInputs = craneCommonArgs.nativeBuildInputs ++ [ chromedriver chromium mailpit ];
             CHROME_BINARY = "${chromium}/bin/chromium";
             # the UI has emoji in it, and skia aborts the renderer rather than
             # fall back to a font it cannot find
@@ -84,6 +84,7 @@
         devShells.default = mkShell {
           buildInputs = [
             chromedriver
+            mailpit
             rolldown
             rust
             tailwindcss_4

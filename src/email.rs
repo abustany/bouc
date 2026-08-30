@@ -1,7 +1,6 @@
-use std::sync::Arc;
-
+use anyhow::{Context, Result};
 use async_trait::async_trait;
-use tokio::sync::Mutex;
+use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor, message::header::ContentType};
 
 pub enum SmtpTlsConfig {
     Disabled,
@@ -56,28 +55,34 @@ impl Sender for ConsoleSender {
     }
 }
 
-/// Clones share the captured messages, so a test can keep one to read what
-/// the app sent.
-#[derive(Clone, Default)]
-pub struct CaptureSender {
-    messages: Arc<Mutex<Vec<Message>>>,
+pub struct SmtpSender {
+    transport: AsyncSmtpTransport<Tokio1Executor>,
 }
 
-impl CaptureSender {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub async fn messages(&self) -> Vec<Message> {
-        self.messages.lock().await.clone()
+impl SmtpSender {
+    pub fn new(url: &str) -> Result<Self> {
+        Ok(Self {
+            transport: AsyncSmtpTransport::<Tokio1Executor>::from_url(url)
+                .context("configuring SMTP transport")?
+                .build(),
+        })
     }
 }
 
 #[async_trait]
-impl Sender for CaptureSender {
+impl Sender for SmtpSender {
     async fn send(&self, message: Message) -> anyhow::Result<()> {
-        let mut messages = self.messages.lock().await;
-        messages.push(message);
+        self.transport
+            .send(
+                lettre::Message::builder()
+                    .from(message.from.parse().context("parsing from address")?)
+                    .to(message.to.parse().context("parsing to address")?)
+                    .subject(message.subject)
+                    .header(ContentType::TEXT_PLAIN)
+                    .body(message.body)
+                    .context("building message")?,
+            )
+            .await?;
         Ok(())
     }
 }

@@ -1,7 +1,8 @@
-//! Drives the whole app in a real browser. Needs `chromedriver` on the PATH and
-//! a Chrome install, and skips itself when chromedriver is missing. Setting
-//! `CHROME_BINARY` picks the browser to drive and makes a missing chromedriver
-//! an error instead of a skip, so the nix check cannot silently pass.
+//! Drives the whole app in a real browser. Needs `chromedriver` and `mailpit`
+//! on the PATH and a Chrome install, and skips itself when chromedriver is
+//! missing. Setting `CHROME_BINARY` picks the browser to drive and makes a
+//! missing chromedriver an error instead of a skip, so the nix check cannot
+//! silently pass.
 
 use std::net::SocketAddr;
 use std::process::{Child, Command, Stdio};
@@ -20,8 +21,10 @@ use jiff::tz::TimeZone;
 use jiff_icu::ConvertInto;
 use serde_json::{Value, json};
 
+mod mailpit;
 mod testing_library;
 
+use mailpit::Mailpit;
 use testing_library::{
     NameMatch, POLL_INTERVAL, User, WAIT_TIMEOUT, eval, screen, texts_in, value, value_missing,
     wait_for_animations, wait_for_attribute, wait_for_count, wait_for_count_in, wait_for_text,
@@ -166,12 +169,12 @@ async fn subscribes_to_notifications() -> Result<()> {
     run_scenario(BrowserProfile::Desktop, notifications).await
 }
 
-/// A server, a browser and the emails the server sent.
+/// A server, a browser and the mail server the app delivers to.
 struct Session {
     _driver: Chromedriver,
     client: Client,
     addr: SocketAddr,
-    emails: email::CaptureSender,
+    mailpit: Mailpit,
     profile: BrowserProfile,
 }
 
@@ -202,14 +205,15 @@ async fn run_scenario(
         return Ok(());
     }
 
-    let (addr, emails) = serve().await?;
+    let mailpit = Mailpit::start().await?;
+    let addr = serve(&mailpit.smtp_url()).await?;
     let driver = Chromedriver::start().await?;
     let client = new_client(driver.port, browser.as_deref(), profile).await?;
     let session = Session {
         _driver: driver,
         client,
         addr,
-        emails,
+        mailpit,
         profile,
     };
 
@@ -536,14 +540,17 @@ async fn wait_for_link(session: &Session, kind: &str) -> Result<String> {
     let deadline = Instant::now() + WAIT_TIMEOUT;
 
     loop {
-        let messages = session.emails.messages().await;
-        let link = messages
+        let link = session
+            .mailpit
+            .message_bodies()
+            .await?
             .iter()
-            .flat_map(|message| message.body.split_whitespace())
-            .find(|word| word.starts_with(&prefix));
+            .flat_map(|body| body.split_whitespace())
+            .find(|word| word.starts_with(&prefix))
+            .map(str::to_owned);
 
         if let Some(link) = link {
-            return Ok(link.to_owned());
+            return Ok(link);
         }
         if Instant::now() >= deadline {
             bail!("timed out waiting for an email with a {kind} link");
@@ -680,12 +687,11 @@ fn booking_day(day: i8) -> Result<String> {
         .to_string())
 }
 
-async fn serve() -> Result<(SocketAddr, email::CaptureSender)> {
+async fn serve(smtp_url: &str) -> Result<SocketAddr> {
     let port = free_port()?;
     let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
     let signed_cookie_key = vec![0u8; 64];
-    let emails = email::CaptureSender::new();
-    let email_sender = emails.clone();
+    let email_sender = email::SmtpSender::new(smtp_url).context("building the SMTP sender")?;
 
     tokio::spawn(async move {
         start(StartOptions {
@@ -703,7 +709,7 @@ async fn serve() -> Result<(SocketAddr, email::CaptureSender)> {
         .expect("serving");
     });
 
-    Ok((addr, emails))
+    Ok(addr)
 }
 
 fn chromedriver_available() -> bool {
@@ -730,14 +736,7 @@ impl Chromedriver {
             .spawn()
             .context("spawning chromedriver")?;
         let driver = Self { process, port };
-
-        let deadline = Instant::now() + WAIT_TIMEOUT;
-        while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
-            if Instant::now() >= deadline {
-                bail!("chromedriver did not start listening on port {port}");
-            }
-            tokio::time::sleep(POLL_INTERVAL).await;
-        }
+        wait_for_port(port, "chromedriver").await?;
 
         Ok(driver)
     }
@@ -748,6 +747,19 @@ impl Drop for Chromedriver {
         let _ = self.process.kill();
         let _ = self.process.wait();
     }
+}
+
+async fn wait_for_port(port: u16, what: &str) -> Result<()> {
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+
+    while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+        if Instant::now() >= deadline {
+            bail!("{what} did not start listening on port {port}");
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+
+    Ok(())
 }
 
 fn free_port() -> Result<u16> {
