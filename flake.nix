@@ -78,7 +78,15 @@
 
         cargoArtifacts = craneLib.buildDepsOnly craneCommonArgs;
 
-        bouc = craneLib.buildPackage (craneCommonArgs // { inherit cargoArtifacts; });
+        # the crate version in Cargo.toml is meaningless, we release from git
+        version = self.shortRev or self.dirtyShortRev;
+
+        bouc = craneLib.buildPackage (
+          craneCommonArgs
+          // {
+            inherit cargoArtifacts version;
+          }
+        );
 
         boucImage = pkgs.dockerTools.buildLayeredImage {
           name = "bouc";
