@@ -254,7 +254,7 @@ async fn scenario(client: &Client, addr: SocketAddr, profile: BrowserProfile) ->
         .await?;
     assert!(value_missing(&name_input).await?);
 
-    log_in(client, "Alice").await?;
+    log_in_as(client, "alice", "Alice").await?;
     let booking_modal = find_modal(client, Modal::Booking).await?;
     let guest_count_input = within(client, &booking_modal)
         .find_by_role(
@@ -618,6 +618,10 @@ async fn book(client: &Client, start: &str, end: &str, profile: BrowserProfile) 
 }
 
 async fn log_in(client: &Client, name: &str) -> Result<()> {
+    log_in_as(client, name, name).await
+}
+
+async fn log_in_as(client: &Client, name: &str, expected_name: &str) -> Result<()> {
     let modal = find_modal(client, Modal::Login).await?;
     let input = within(client, &modal)
         .find_by_role(
@@ -628,7 +632,7 @@ async fn log_in(client: &Client, name: &str) -> Result<()> {
     User::new(client).fill(&input, name).await?;
     submit(client, Modal::Login).await?;
     wait_for_modal_to_close(client, Modal::Login).await?;
-    wait_for_text(client, LOGGED_IN_INFO, name).await
+    wait_for_text(client, LOGGED_IN_INFO, expected_name).await
 }
 
 async fn log_out(client: &Client, login_label: &str, profile: BrowserProfile) -> Result<()> {

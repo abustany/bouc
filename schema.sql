@@ -1,6 +1,7 @@
 CREATE TABLE people (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL UNIQUE
+  name TEXT NOT NULL,
+  name_key TEXT NOT NULL UNIQUE
 ) strict;
 
 CREATE TABLE notification_subscriptions (

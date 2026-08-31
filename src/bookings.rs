@@ -1,4 +1,7 @@
 use anyhow::Result;
+use icu::normalizer::DecomposingNormalizer;
+use icu::properties::CodePointMapData;
+use icu::properties::props::GeneralCategory;
 use jiff::{Timestamp, civil::Date};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -227,13 +230,27 @@ pub enum PersonNameError {
     Empty,
 }
 
-/// Validate a person's name, returning the trimmed value on success.
+/// Validate a person's name, returning the trimmed and capitalized value on
+/// success.
 pub fn validate_person_name(name: &str) -> Result<String, PersonNameError> {
     let name = name.trim();
-    if name.is_empty() {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
         return Err(PersonNameError::Empty);
-    }
-    Ok(name.to_owned())
+    };
+    Ok(first.to_uppercase().chain(chars).collect())
+}
+
+/// Build the key two names have in common when they only differ by case or by
+/// diacritics.
+pub fn person_name_key(name: &str) -> String {
+    let categories = CodePointMapData::<GeneralCategory>::new();
+    DecomposingNormalizer::new_nfd()
+        .normalize(name.trim())
+        .chars()
+        .filter(|c| categories.get(*c) != GeneralCategory::NonspacingMark)
+        .collect::<String>()
+        .to_lowercase()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -255,4 +272,29 @@ pub fn validate_booking(booking: &BookingInput) -> Result<(), BookingError> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PersonNameError, person_name_key, validate_person_name};
+
+    #[test]
+    fn validates_and_capitalizes_names() {
+        assert_eq!(validate_person_name("john").unwrap(), "John");
+        assert_eq!(validate_person_name("  élise ").unwrap(), "Élise");
+        assert_eq!(validate_person_name("JOHN").unwrap(), "JOHN");
+        assert_eq!(validate_person_name("McArthur").unwrap(), "McArthur");
+        assert_eq!(validate_person_name(""), Err(PersonNameError::Empty));
+        assert_eq!(validate_person_name("  \t "), Err(PersonNameError::Empty));
+    }
+
+    #[test]
+    fn names_differing_by_case_or_diacritics_share_a_key() {
+        assert_eq!(person_name_key("Émilie"), "emilie");
+        assert_eq!(person_name_key("emilie"), "emilie");
+        assert_eq!(person_name_key("ÉMILIE"), "emilie");
+        assert_eq!(person_name_key(" Émilie "), "emilie");
+        assert_eq!(person_name_key("Jean-Luc"), "jean-luc");
+        assert_eq!(person_name_key("e\u{301}milie"), person_name_key("émilie"));
+    }
 }

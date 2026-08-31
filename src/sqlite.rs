@@ -9,7 +9,7 @@ use tokio_rusqlite::{Connection, rusqlite};
 use crate::bookings::{
     Booking, BookingId, BookingInput, BookingLogEntry, BookingLogEntryId, BookingLogEntryPayload,
     DeleteBookingError, ListBookingsFilter, NotificationSubscription, Person, PersonId, Repository,
-    UpdateBookingError,
+    UpdateBookingError, person_name_key,
 };
 
 const BOOKING_LOG_PAGE_SIZE: u32 = 50;
@@ -78,14 +78,17 @@ impl Repository for SqliteRepository {
 
     async fn save_person(&self, name: &str) -> anyhow::Result<Person> {
         let name = name.to_owned();
+        let name_key = person_name_key(&name);
         self.conn
             .call(move |conn| -> rusqlite::Result<Person> {
-                let id: i64 = conn.query_row(
-                    "INSERT INTO people (name) VALUES (?1) \
-                     ON CONFLICT(name) DO UPDATE SET name = excluded.name \
-                     RETURNING id",
-                    rusqlite::params![name],
-                    |row| row.get(0),
+                // the no-op update keeps the name already stored, and makes the
+                // conflicting row available to RETURNING
+                let (id, name): (i64, String) = conn.query_row(
+                    "INSERT INTO people (name, name_key) VALUES (?1, ?2) \
+                     ON CONFLICT(name_key) DO UPDATE SET name = name \
+                     RETURNING id, name",
+                    rusqlite::params![name, name_key],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )?;
 
                 Ok(Person {
@@ -100,7 +103,7 @@ impl Repository for SqliteRepository {
     async fn list_people(&self) -> anyhow::Result<Vec<Person>> {
         self.conn
             .call(|conn| -> rusqlite::Result<Vec<Person>> {
-                let mut stmt = conn.prepare("SELECT id, name FROM people ORDER BY name")?;
+                let mut stmt = conn.prepare("SELECT id, name FROM people ORDER BY name_key")?;
                 let people = stmt
                     .query_map([], |row| {
                         Ok(Person {
@@ -527,6 +530,41 @@ mod tests {
 
         assert_eq!(first.id, again.id);
         assert_eq!(again.name, "Alice");
+    }
+
+    #[tokio::test]
+    async fn names_differing_by_case_or_diacritics_share_a_row() {
+        let repo = setup().await;
+
+        let john = repo.save_person("John").await.unwrap();
+        let john_again = repo.save_person("john").await.unwrap();
+
+        assert_eq!(john.id, john_again.id);
+        assert_eq!(john_again.name, "John");
+
+        let emilie = repo.save_person("Émilie").await.unwrap();
+        let emilie_again = repo.save_person("emilie").await.unwrap();
+
+        assert_eq!(emilie.id, emilie_again.id);
+        assert_eq!(emilie_again.name, "Émilie");
+    }
+
+    #[tokio::test]
+    async fn lists_people_ignoring_case_and_diacritics() {
+        let repo = setup().await;
+
+        repo.save_person("bob").await.unwrap();
+        repo.save_person("Émilie").await.unwrap();
+        repo.save_person("Alice").await.unwrap();
+
+        let names = repo
+            .list_people()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|p| p.name)
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["Alice", "bob", "Émilie"]);
     }
 
     #[tokio::test]
