@@ -42,7 +42,7 @@
           filter =
             path: type:
             (craneLib.filterCargoSources path type)
-            || (pkgs.lib.hasInfix "/assets/" path)
+            || (pkgs.lib.hasInfix "/assets/vendor/" path)
             || (pkgs.lib.hasSuffix ".sql" path)
             || (pkgs.lib.hasSuffix ".css" path)
             || (pkgs.lib.hasSuffix ".ts" path)
