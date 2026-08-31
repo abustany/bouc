@@ -111,6 +111,10 @@
             ExposedPorts = {
               "3000/tcp" = { };
             };
+            # ghcr.io uses this to attach the package to the repository
+            Labels = {
+              "org.opencontainers.image.source" = "https://github.com/abustany/bouc";
+            };
             # nothing sets up /etc/ssl or /etc/localtime in the image, so point
             # openssl and jiff straight at the store
             Env = [
