@@ -49,6 +49,17 @@
             || (pkgs.lib.hasInfix "tests/testing_library/testing-library-dom" path);
         };
 
+        # tsconfig.json is deliberately not in `src`: it would invalidate the
+        # cargo dependency build on every edit
+        tsSrc = pkgs.lib.cleanSourceWith {
+          src = ./.;
+          filter =
+            path: type:
+            (type == "directory")
+            || (pkgs.lib.hasSuffix ".ts" path)
+            || (pkgs.lib.hasSuffix "/tsconfig.json" path);
+        };
+
         craneCommonArgs = {
           inherit src;
           strictDeps = true;
@@ -77,6 +88,21 @@
 
           bouc-clippy = craneLib.cargoClippy (craneCommonArgs // { inherit cargoArtifacts; });
           bouc-fmt = craneLib.cargoFmt { inherit src; };
+
+          bouc-ts =
+            runCommand "bouc-ts"
+              {
+                nativeBuildInputs = [
+                  typescript
+                  oxlint
+                ];
+              }
+              ''
+                cd ${tsSrc}
+                tsc --noEmit
+                oxlint --deny-warnings
+                touch $out
+              '';
         }
         # nixpkgs has no chromium on darwin: build checks.<linux system>.bouc-e2e
         # from there, nix hands it to a linux builder

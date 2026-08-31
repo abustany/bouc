@@ -31,12 +31,11 @@ jobs:
         run: treefmt --ci
         shell: nix develop --command bash -e {0}
 
-      - name: Oxlint
-        run: oxlint
-        shell: nix develop --command bash -e {0}
-
       - name: Clippy
         run: nix build --no-link -L .#checks.x86_64-linux.bouc-clippy
+
+      - name: Typescript
+        run: nix build --no-link -L .#checks.x86_64-linux.bouc-ts
 
       - name: Tests
         run: nix build --no-link -L .#checks.x86_64-linux.bouc
