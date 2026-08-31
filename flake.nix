@@ -79,6 +79,38 @@
         cargoArtifacts = craneLib.buildDepsOnly craneCommonArgs;
 
         bouc = craneLib.buildPackage (craneCommonArgs // { inherit cargoArtifacts; });
+
+        boucImage = pkgs.dockerTools.buildLayeredImage {
+          name = "bouc";
+          tag = bouc.version;
+          contents = [
+            bouc
+            # a non-root user needs an /etc/passwd entry, and glibc needs an
+            # /etc/nsswitch.conf to resolve the SMTP server name
+            (pkgs.dockerTools.fakeNss.override {
+              extraPasswdLines = [ "bouc:x:1000:1000:bouc:/data:/noshell" ];
+              extraGroupLines = [ "bouc:x:1000:" ];
+            })
+          ];
+          fakeRootCommands = ''
+            mkdir -p ./data
+            chown 1000:1000 ./data
+          '';
+          config = {
+            Entrypoint = [ "/bin/bouc" ];
+            User = "1000:1000";
+            WorkingDir = "/data";
+            ExposedPorts = {
+              "3000/tcp" = { };
+            };
+            # nothing sets up /etc/ssl or /etc/localtime in the image, so point
+            # openssl and jiff straight at the store
+            Env = [
+              "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+              "TZDIR=${pkgs.tzdata}/share/zoneinfo"
+            ];
+          };
+        };
       in
       with pkgs;
       {
@@ -131,7 +163,14 @@
             }
           );
         };
-        packages.default = bouc;
+        packages = {
+          default = bouc;
+        }
+        # dockerTools only builds linux images: build
+        # packages.<linux system>.docker, nix hands it to a linux builder
+        // lib.optionalAttrs stdenv.hostPlatform.isLinux {
+          docker = boucImage;
+        };
         apps.default = flake-utils.lib.mkApp { drv = bouc; };
         devShells.default = mkShell {
           buildInputs = [
