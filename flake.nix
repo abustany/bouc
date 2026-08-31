@@ -85,9 +85,12 @@
           buildInputs = [
             chromedriver
             mailpit
+            nixfmt
+            oxfmt
             rolldown
             rust
             tailwindcss_4
+            treefmt
             typescript
             watchexec
           ] ++ lib.optionals stdenv.isDarwin [ libiconv ];
