@@ -115,6 +115,7 @@
             openssl
             oxfmt
             pkg-config
+            oxlint
             rolldown
             rust
             tailwindcss_4
