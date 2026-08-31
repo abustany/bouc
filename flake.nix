@@ -55,8 +55,13 @@
           nativeBuildInputs = [
             rolldown
             pkgs.tailwindcss_4
+            # lettre's native-tls pulls in openssl-sys, which needs pkg-config
+            pkgs.pkg-config
           ];
-          buildInputs = [ ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
+          buildInputs = [
+            pkgs.openssl
+          ]
+          ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
         };
 
         cargoArtifacts = craneLib.buildDepsOnly craneCommonArgs;
@@ -106,7 +111,9 @@
             chromedriver
             mailpit
             nixfmt
+            openssl
             oxfmt
+            pkg-config
             rolldown
             rust
             tailwindcss_4
