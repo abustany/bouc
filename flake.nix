@@ -45,7 +45,8 @@
             || (pkgs.lib.hasInfix "/assets/" path)
             || (pkgs.lib.hasSuffix ".sql" path)
             || (pkgs.lib.hasSuffix ".css" path)
-            || (pkgs.lib.hasSuffix ".ts" path);
+            || (pkgs.lib.hasSuffix ".ts" path)
+            || (pkgs.lib.hasInfix "tests/testing_library/testing-library-dom" path);
         };
 
         craneCommonArgs = {
