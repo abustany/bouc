@@ -1,77 +1,79 @@
 @import "tailwindcss";
 
 @theme inline {
-    --color-border: #ced4da;
-    --color-button: #333;
+  --color-border: #ced4da;
+  --color-button: #333;
 
-    --breakpoint-md: 400px;
-    --breakpoint-lg: 700px;
+  --breakpoint-md: 400px;
+  --breakpoint-lg: 700px;
 }
 
 /* Phones, where the day popover becomes a sheet coming from the bottom of the
    screen. src/index.ts matches this media query to switch the popover
    behaviour, and has to be kept in sync with it. */
 @custom-variant sheet {
-    @media (width < theme(--breakpoint-md)) and (hover: none) {
-        @slot;
-    }
+  @media (width < theme(--breakpoint-md)) and (hover: none) {
+    @slot;
+  }
 }
 
 @layer base {
-    input {
-        @apply border border-border rounded-xs px-2 py-1;
-    }
+  input {
+    @apply border border-border rounded-xs px-2 py-1;
+  }
 
-    input:focus {
-        @apply border-black outline outline-black;
-    }
+  input:focus {
+    @apply border-black outline outline-black;
+  }
 
-    .form-button {
-        @apply border-3 border-transparent rounded-xs bg-button text-white px-3 py-1.5;
-    }
+  .form-button {
+    @apply border-3 border-transparent rounded-xs bg-button text-white px-3 py-1.5;
+  }
 
-    .form-button:focus {
-        @apply border-black;
-    }
+  .form-button:focus {
+    @apply border-black;
+  }
 
-    .form-button:focus-visible {
-        @apply outline-0;
+  .form-button:focus-visible {
+    @apply outline-0;
+  }
+
+  .request-busy {
+    display: none;
+  }
+
+  .htmx-request {
+    .request-idle {
+      display: none;
     }
 
     .request-busy {
-        display: none;
+      display: inline;
     }
-
-    .htmx-request {
-        .request-idle {
-            display: none;
-        }
-
-        .request-busy {
-            display: inline;
-        }
-    }
+  }
 }
 
 @layer components {
-    .btn-primary {
-        @apply rounded-full px-3 py-1.5 transition-colors bg-green-500 hover:bg-green-400 active:scale-95;
-    }
+  .btn-primary {
+    @apply rounded-full px-3 py-1.5 transition-colors bg-green-500 hover:bg-green-400 active:scale-95;
+  }
 }
 
 @layer utilities {
-    .booking-start {
-        @apply bg-blue-500 hover:bg-blue-500 rounded-none rounded-l-full;
-    }
+  .booking-start {
+    @apply bg-blue-500 hover:bg-blue-500 rounded-none rounded-l-full;
+  }
 
-    .booking-middle {
-        @apply bg-blue-500 rounded-none;
-    }
+  .booking-middle {
+    @apply bg-blue-500 rounded-none;
+  }
 
-    .booking-end {
-        @apply bg-blue-500 hover:bg-blue-500 rounded-none rounded-r-full;
-    }
+  .booking-end {
+    @apply bg-blue-500 hover:bg-blue-500 rounded-none rounded-r-full;
+  }
 
-    /* https://alpinejs.dev/directives/cloak */
-    [x-cloak] { display: none !important; }
+  /* https://alpinejs.dev/directives/cloak */
+  [x-cloak] {
+    display: none !important;
+  }
 }

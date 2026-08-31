@@ -21,10 +21,7 @@ function place(cell: HTMLElement, popover: HTMLElement): void {
   let top = anchor.bottom;
   if (top + box.height > window.innerHeight - EDGE) {
     const above = anchor.top - box.height;
-    top =
-      above >= EDGE
-        ? above
-        : Math.max(EDGE, window.innerHeight - box.height - EDGE);
+    top = above >= EDGE ? above : Math.max(EDGE, window.innerHeight - box.height - EDGE);
   }
 
   let left = anchor.left + (anchor.width - box.width) / 2;
@@ -78,7 +75,10 @@ interface AppComponentData {
   showProfileDropdown: boolean;
 
   ensureLoggedIn(): void;
-  onUserLoggedIn(userId: string, notificationSubscriptionState: NotificationSubscriptionState): void;
+  onUserLoggedIn(
+    userId: string,
+    notificationSubscriptionState: NotificationSubscriptionState,
+  ): void;
   onUserLoggedOut(): void;
   onSubscribeToNotifications(): void;
   onNotificationSubscriptionStateChanged(state: NotificationSubscriptionState): void;
@@ -115,8 +115,8 @@ const AppComponent: (
   },
 
   onNotificationSubscriptionStateChanged(state) {
-    this.notificationSubscriptionState = state
-  }
+    this.notificationSubscriptionState = state;
+  },
 });
 
 function asAppChild(obj: unknown): AppComponentData {
@@ -154,15 +154,13 @@ interface CalendarComponentData {
   onBookingSaved(): void;
   instantPopover: boolean;
   justBooked: boolean;
-  hintToShow: "pick-day"|"pick-end-day"|"booking-complete" | null;
+  hintToShow: "pick-day" | "pick-end-day" | "booking-complete" | null;
   shouldShowPopoverForDay(day: string): boolean;
   popoverClasses(day: string): string;
   placePopover(day: string): void;
   openPopover(day: string): void;
   closePopover(): void;
-  pendingBookingDayClass(
-    day: string,
-  ): "booking-start" | "booking-middle" | "booking-end" | "";
+  pendingBookingDayClass(day: string): "booking-start" | "booking-middle" | "booking-end" | "";
   startBooking(day: string): void;
   editBooking(b: PendingBooking): void;
   booking: PendingBooking | null;
@@ -241,10 +239,10 @@ const CalendarComponent: () => AlpineComponent<CalendarComponentData> = () => ({
   justBooked: false,
 
   get hintToShow() {
-    if (this.justBooked) return "booking-complete"
-    if (this.state.kind === "init") return "pick-day"
-    if (this.state.kind === "pickingDays") return "pick-end-day"
-    return null
+    if (this.justBooked) return "booking-complete";
+    if (this.state.kind === "init") return "pick-day";
+    if (this.state.kind === "pickingDays") return "pick-end-day";
+    return null;
   },
 
   shouldShowPopoverForDay(day: string): boolean {
@@ -335,8 +333,8 @@ const CalendarComponent: () => AlpineComponent<CalendarComponentData> = () => ({
   },
 
   get currentUserId() {
-    return asAppChild(this).userId
-  }
+    return asAppChild(this).userId;
+  },
 });
 
 interface EditBookingComponentData {
@@ -347,100 +345,98 @@ interface EditBookingComponentData {
   onBookingSaved(): void;
 }
 
-const EditBookingComponent: () => AlpineComponent<EditBookingComponentData> =
-  () => ({
-    get booking() {
-      return asAppChild(this).currentBooking;
-    },
+const EditBookingComponent: () => AlpineComponent<EditBookingComponentData> = () => ({
+  get booking() {
+    return asAppChild(this).currentBooking;
+  },
 
-    get shouldShowModal() {
-      return (
-        asAppChild(this).userId !== null &&
-        asAppChild(this).currentBooking !== null
-      );
-    },
+  get shouldShowModal() {
+    return asAppChild(this).userId !== null && asAppChild(this).currentBooking !== null;
+  },
 
-    get modalTitle() {
-      return asAppChild(this).currentBooking?.id
-        ? window.localizedStrings.booking_modal_title_edit
-        : window.localizedStrings.booking_modal_title_new;
-    },
+  get modalTitle() {
+    return asAppChild(this).currentBooking?.id
+      ? window.localizedStrings.booking_modal_title_edit
+      : window.localizedStrings.booking_modal_title_new;
+  },
 
-    onModalClose() {
-      asAppChild(this).currentBooking = null;
-    },
+  onModalClose() {
+    asAppChild(this).currentBooking = null;
+  },
 
-    onBookingSaved() {
-      asAppChild(this).currentBooking = null;
-    },
+  onBookingSaved() {
+    asAppChild(this).currentBooking = null;
+  },
 
-    init() {
-      const modal = this.$refs.modal as HTMLDialogElement;
+  init() {
+    const modal = this.$refs.modal as HTMLDialogElement;
 
-      this.$watch("shouldShowModal", (b) => {
-        if (b) {
-          modal.showModal();
-        } else {
-          modal.close();
-        }
-      });
-    },
+    this.$watch("shouldShowModal", (b) => {
+      if (b) {
+        modal.showModal();
+      } else {
+        modal.close();
+      }
+    });
+  },
 
-    close() {
-      asAppChild(this).currentBooking = null;
-    },
-  });
+  close() {
+    asAppChild(this).currentBooking = null;
+  },
+});
 
 interface NameModalComponentData {
   showModal(): void;
   appUserId: string | null;
 }
 
-const NameModalComponent: () => AlpineComponent<NameModalComponentData> =
-  () => ({
-    showModal() {
-      (this.$refs.modal as HTMLDialogElement).showModal();
-    },
+const NameModalComponent: () => AlpineComponent<NameModalComponentData> = () => ({
+  showModal() {
+    (this.$refs.modal as HTMLDialogElement).showModal();
+  },
 
-    get appUserId() {
-      return asAppChild(this).userId;
-    },
+  get appUserId() {
+    return asAppChild(this).userId;
+  },
 
-    init() {
-      this.$watch("appUserId", (userId) => {
-        if (userId !== null) {
-          (this.$refs.modal as HTMLDialogElement).close();
-        }
-      });
-    },
-  });
+  init() {
+    this.$watch("appUserId", (userId) => {
+      if (userId !== null) {
+        (this.$refs.modal as HTMLDialogElement).close();
+      }
+    });
+  },
+});
 
 interface EmailModalComponentData {
   showModal(): void;
   appNotificationSubscriptionState: NotificationSubscriptionState;
 }
 
-const EmailModalComponent: () => AlpineComponent<EmailModalComponentData> =
-  () => ({
-    showModal() {
-      (this.$refs.modal as HTMLDialogElement).showModal();
-    },
+const EmailModalComponent: () => AlpineComponent<EmailModalComponentData> = () => ({
+  showModal() {
+    (this.$refs.modal as HTMLDialogElement).showModal();
+  },
 
-    get appNotificationSubscriptionState() {
-      return asAppChild(this).notificationSubscriptionState;
-    },
+  get appNotificationSubscriptionState() {
+    return asAppChild(this).notificationSubscriptionState;
+  },
 
-    init() {
-      this.$watch("appNotificationSubscriptionState", (notificationSubscriptionState) => {
-        if (notificationSubscriptionState !== "none") {
-          (this.$refs.modal as HTMLDialogElement).close();
-        }
-      });
-    },
-  });
+  init() {
+    this.$watch("appNotificationSubscriptionState", (notificationSubscriptionState) => {
+      if (notificationSubscriptionState !== "none") {
+        (this.$refs.modal as HTMLDialogElement).close();
+      }
+    });
+  },
+});
 
 document.addEventListener("alpine:init", () => {
-  Alpine.data("app", (userId: string | null, notificationSubscriptionState: NotificationSubscriptionState) => AppComponent(userId, notificationSubscriptionState));
+  Alpine.data(
+    "app",
+    (userId: string | null, notificationSubscriptionState: NotificationSubscriptionState) =>
+      AppComponent(userId, notificationSubscriptionState),
+  );
   Alpine.data("calendar", () => CalendarComponent());
   Alpine.data("editBooking", () => EditBookingComponent());
   Alpine.data("nameModal", () => NameModalComponent());

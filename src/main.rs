@@ -61,9 +61,10 @@ async fn main() -> anyhow::Result<()> {
     let email_sender: Box<dyn email::Sender> = if let Some(url) = args.smtp_server_url {
         let mut parsed_url: url::Url = url.parse().context("parsing SMTP server URL")?;
         if let Ok(password) = std::env::var("SMTP_PASSWORD")
-            && parsed_url.set_password(Some(&password)).is_err() {
-                bail!("error setting SMTP url password");
-            }
+            && parsed_url.set_password(Some(&password)).is_err()
+        {
+            bail!("error setting SMTP url password");
+        }
 
         Box::new(email::SmtpSender::new(parsed_url.as_str()).context("building SMTP sender")?)
     } else {

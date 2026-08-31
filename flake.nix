@@ -1,21 +1,29 @@
-
 {
   description = "bouc";
 
   inputs = {
-    nixpkgs.url  = "github:NixOS/nixpkgs/nixos-26.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs = {
         nixpkgs.follows = "nixpkgs";
       };
     };
-    flake-utils.url  = "github:numtide/flake-utils";
+    flake-utils.url = "github:numtide/flake-utils";
     crane.url = "github:ipetkov/crane";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, flake-utils, crane, ... }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      rust-overlay,
+      flake-utils,
+      crane,
+      ...
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs {
@@ -31,7 +39,8 @@
 
         src = pkgs.lib.cleanSourceWith {
           src = ./.;
-          filter = path: type:
+          filter =
+            path: type:
             (craneLib.filterCargoSources path type)
             || (pkgs.lib.hasInfix "/assets/" path)
             || (pkgs.lib.hasSuffix ".sql" path)
@@ -43,15 +52,16 @@
           inherit src;
           strictDeps = true;
           # build.rs shells out to both
-          nativeBuildInputs = [ rolldown pkgs.tailwindcss_4 ];
-          buildInputs = [] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
+          nativeBuildInputs = [
+            rolldown
+            pkgs.tailwindcss_4
+          ];
+          buildInputs = [ ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
         };
 
         cargoArtifacts = craneLib.buildDepsOnly craneCommonArgs;
 
-        bouc = craneLib.buildPackage(
-          craneCommonArgs // { inherit cargoArtifacts; }
-        );
+        bouc = craneLib.buildPackage (craneCommonArgs // { inherit cargoArtifacts; });
       in
       with pkgs;
       {
@@ -59,25 +69,35 @@
           # Make sure it compiles
           inherit bouc;
 
-          bouc-clippy = craneLib.cargoClippy ( craneCommonArgs // { inherit cargoArtifacts; } );
+          bouc-clippy = craneLib.cargoClippy (craneCommonArgs // { inherit cargoArtifacts; });
           bouc-fmt = craneLib.cargoFmt { inherit src; };
         }
         # nixpkgs has no chromium on darwin: build checks.<linux system>.bouc-e2e
         # from there, nix hands it to a linux builder
         // lib.optionalAttrs stdenv.hostPlatform.isLinux {
-          bouc-e2e = craneLib.cargoTest ( craneCommonArgs // {
-            inherit cargoArtifacts;
-            cargoTestExtraArgs = "--test e2e";
-            nativeBuildInputs = craneCommonArgs.nativeBuildInputs ++ [ chromedriver chromium mailpit ];
-            CHROME_BINARY = "${chromium}/bin/chromium";
-            # the UI has emoji in it, and skia aborts the renderer rather than
-            # fall back to a font it cannot find
-            FONTCONFIG_FILE = makeFontsConf {
-              fontDirectories = [ dejavu_fonts noto-fonts-color-emoji ];
-            };
-            # chrome refuses to start without a writable home
-            preCheck = "export HOME=$(mktemp -d)";
-          } );
+          bouc-e2e = craneLib.cargoTest (
+            craneCommonArgs
+            // {
+              inherit cargoArtifacts;
+              cargoTestExtraArgs = "--test e2e";
+              nativeBuildInputs = craneCommonArgs.nativeBuildInputs ++ [
+                chromedriver
+                chromium
+                mailpit
+              ];
+              CHROME_BINARY = "${chromium}/bin/chromium";
+              # the UI has emoji in it, and skia aborts the renderer rather than
+              # fall back to a font it cannot find
+              FONTCONFIG_FILE = makeFontsConf {
+                fontDirectories = [
+                  dejavu_fonts
+                  noto-fonts-color-emoji
+                ];
+              };
+              # chrome refuses to start without a writable home
+              preCheck = "export HOME=$(mktemp -d)";
+            }
+          );
         };
         packages.default = bouc;
         apps.default = flake-utils.lib.mkApp { drv = bouc; };
@@ -93,7 +113,8 @@
             treefmt
             typescript
             watchexec
-          ] ++ lib.optionals stdenv.isDarwin [ libiconv ];
+          ]
+          ++ lib.optionals stdenv.isDarwin [ libiconv ];
         };
       }
     );
