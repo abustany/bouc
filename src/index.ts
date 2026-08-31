@@ -75,10 +75,12 @@ interface AppComponentData {
   currentBooking: PendingBooking | null;
   userId: string | null;
   notificationSubscriptionState: NotificationSubscriptionState;
+  showProfileDropdown: boolean;
 
   ensureLoggedIn(): void;
   onUserLoggedIn(userId: string, notificationSubscriptionState: NotificationSubscriptionState): void;
   onUserLoggedOut(): void;
+  onSubscribeToNotifications(): void;
   onNotificationSubscriptionStateChanged(state: NotificationSubscriptionState): void;
 }
 
@@ -90,6 +92,7 @@ const AppComponent: (
   currentBooking: null,
   userId,
   notificationSubscriptionState,
+  showProfileDropdown: false,
 
   ensureLoggedIn() {
     if (this.userId !== null) return;
@@ -104,6 +107,11 @@ const AppComponent: (
   onUserLoggedOut() {
     this.userId = null;
     this.notificationSubscriptionState = "none";
+    this.showProfileDropdown = false;
+  },
+
+  onSubscribeToNotifications() {
+    this.$dispatch("show-email-modal");
   },
 
   onNotificationSubscriptionStateChanged(state) {
@@ -144,7 +152,6 @@ interface CalendarComponentData {
   onDayMouseLeave(): void;
   onDayClick(day: string): void;
   onBookingSaved(): void;
-  onSubscribeToNotifications(): void;
   instantPopover: boolean;
   justBooked: boolean;
   hintToShow: "pick-day"|"pick-end-day"|"booking-complete" | null;
@@ -229,10 +236,6 @@ const CalendarComponent: () => AlpineComponent<CalendarComponentData> = () => ({
 
   onBookingSaved() {
     this.justBooked = true;
-  },
-
-  onSubscribeToNotifications() {
-    this.$dispatch("show-email-modal");
   },
 
   justBooked: false,

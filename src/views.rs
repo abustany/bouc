@@ -97,10 +97,24 @@ pub fn layout(opts: &LayoutOpts, children: Markup) -> Markup {
                             (switcher_button(&SwitcherButtonOpts { href: "/", label: &format!("🗓️ {}", s.navbar_link_calendar), active: opts.active_page == ActivePage::Calendar }))
                             (switcher_button(&SwitcherButtonOpts { href: "/log", label: &format!("📕 {}", s.navbar_link_log), active: opts.active_page == ActivePage::Log }))
                         }
-                        (logged_in_info(&LoggedInInfoOpts { id: Some(LOGGED_IN_INFO_ELEMENT_ID.to_string()), hx_swap_oob: false, locale: opts.locale, people: opts.people, user_id: opts.user_id }))
+                        (logged_in_info(&LoggedInInfoOpts {
+                            id: Some(LOGGED_IN_INFO_ELEMENT_ID.to_string()),
+                            hx_swap_oob: false,
+                            locale: opts.locale,
+                            people: opts.people,
+                            user_id: opts.user_id,
+                            notification_subscription_state: opts.notification_subscription_state,
+                        }))
                     }
                 }
                 (children)
+                (email_modal(&EmailModalOpts {
+                    locale: opts.locale,
+                }))
+                script {
+                    "window.localizedStrings = "
+                    (PreEscaped(serde_json::to_string(&s).expect("error serializing localized strings to JSON")))
+                }
             }
 
         },
@@ -192,13 +206,6 @@ pub fn index(opts: IndexOpts) -> Markup {
             (name_modal(&NameModalOpts {
                 locale: opts.locale,
             }))
-            (email_modal(&EmailModalOpts {
-                locale: opts.locale,
-            }))
-            script {
-                "window.localizedStrings = "
-                (PreEscaped(serde_json::to_string(&s).expect("error serializing localized strings to JSON")))
-            }
         },
     )
 }
@@ -744,6 +751,7 @@ pub struct LoggedInInfoOpts<'a> {
     pub locale: Locale,
     pub people: &'a HashMap<PersonId, Person>,
     pub user_id: Option<PersonId>,
+    pub notification_subscription_state: NotificationSubscriptionState,
 }
 
 pub fn logged_in_info(opts: &LoggedInInfoOpts) -> Markup {
@@ -751,7 +759,7 @@ pub fn logged_in_info(opts: &LoggedInInfoOpts) -> Markup {
 
     html! {
         div
-          .grid ."grid-cols-[minmax(0,1fr)_auto]" .items-center .gap-1
+          .grid ."grid-cols-[minmax(0,1fr)_auto]" .items-center .gap-1 .relative
           id=[opts.id.clone()]
           hx-swap-oob=(opts.hx_swap_oob)
         {
@@ -760,14 +768,60 @@ pub fn logged_in_info(opts: &LoggedInInfoOpts) -> Markup {
                     @let name = get_person_name(opts.locale, opts.people, user_id);
 
                     {
-                        span .truncate title=(name) { "👤 " (name) }
                         button
-                        .grid .place-content-center .size-5 .rounded-full ."hover:bg-red-400"
-                        aria-label=(s.profile_disconnect)
-                        title=(s.profile_disconnect)
-                        hx-post="/logout"
+                          .truncate .underline .underline-offset-4 .cursor-pointer title=(name)
+                          aria-label="Profile menu"
+                          "x-on:click"="showProfileDropdown = !showProfileDropdown"
+                        { "👤 " (name) }
+
+                        div
+                          role="dialog"
+                          x-cloak
+                          x-show="showProfileDropdown"
+                          "x-on:click.outside"="showProfileDropdown = false"
+                          .fixed .grid .right-0 .top-12 .w-fit ."max-w-[95vw]" .px-2 .py-1 .bg-white .shadow-lg .rounded-lg
                         {
-                            "⏻️"
+                            form
+                              method="post"
+                              action="/notifications"
+                              hx-post="/notifications"
+                              hx-swap="none"
+                            {
+                                @let (status,  button_label, disable_value) = match opts.notification_subscription_state {
+                                    NotificationSubscriptionState::None => (s.profile_notifications_status_none, s.profile_notifications_enable, "0"),
+                                    NotificationSubscriptionState::Pending => (s.profile_notifications_status_pending, s.profile_notifications_resend_verification, "0"),
+                                    NotificationSubscriptionState::Active => (s.profile_notifications_status_active, s.profile_notifications_disable, "1"),
+                                    NotificationSubscriptionState::Disabled => (s.profile_notifications_status_disabled, s.profile_notifications_enable, "0"),
+                                };
+                                @let (button_type, button_onclick) = match opts.notification_subscription_state {
+                                    NotificationSubscriptionState::None | NotificationSubscriptionState::Disabled => ("button", Some("onSubscribeToNotifications()")),
+                                    NotificationSubscriptionState::Pending | NotificationSubscriptionState::Active => ("submit", None),
+                                };
+
+                                input type="hidden" name="disable" value=(disable_value) {}
+
+                                "✉️ " (s.profile_notifications_status) ": " (status) " ("
+                                button
+                                  type=(button_type)
+                                  "x-on:click"=[button_onclick]
+                                  .cursor-pointer .underline .underline-offset-4
+                                {
+                                    (button_label)
+                                }
+                                ")"
+                            }
+                            button
+                              .text-left .cursor-pointer .mt-2
+                              aria-label=(s.profile_disconnect)
+                              hx-post="/logout"
+                            {
+                                "⏻️ "
+                                span
+                                  .underline .underline-offset-4
+                                {
+                                    (s.profile_disconnect)
+                                }
+                            }
                         }
                     }
                 }

@@ -298,7 +298,6 @@ async fn login(
             .context("getting active notification subscription")?;
 
     if is_htmx(&headers) {
-        let logged_in_info = oob_logged_in_info(locale, Some(&user)).await?;
         Ok((
             [(
                 HX_TRIGGER,
@@ -306,7 +305,7 @@ async fn login(
                     .expect("error marshalling user-logged-in event data"),
             )],
             updated_jar,
-            logged_in_info,
+            oob_logged_in_info(locale, Some(&user), notification_subscription_state).await?,
         )
             .into_response())
     } else {
@@ -322,11 +321,10 @@ async fn logout(
     let updated_jar = jar.remove(Cookie::from(USER_ID_COOKIE_NAME));
 
     if is_htmx(&headers) {
-        let logged_in_info = oob_logged_in_info(locale, None).await?;
         Ok((
             [(HX_TRIGGER, "user-logged-out")],
             updated_jar,
-            logged_in_info,
+            oob_logged_in_info(locale, None, views::NotificationSubscriptionState::None).await?,
         )
             .into_response())
     } else {
@@ -337,6 +335,7 @@ async fn logout(
 async fn oob_logged_in_info(
     locale: Locale,
     current_user: Option<&Person>,
+    notification_subscription_state: views::NotificationSubscriptionState,
 ) -> Result<Markup, AppError> {
     let people: HashMap<PersonId, Person> = if let Some(u) = current_user {
         vec![(u.id, u.clone())].into_iter().collect()
@@ -350,6 +349,7 @@ async fn oob_logged_in_info(
         locale,
         people: &people,
         user_id: current_user.map(|u| u.id),
+        notification_subscription_state,
     }))
 }
 
@@ -520,7 +520,8 @@ async fn verify_email(
 
 #[derive(Deserialize)]
 struct SaveNotificationForm {
-    email: String,
+    email: Option<String>,
+    disable: Option<String>,
 }
 
 async fn save_notification(
@@ -534,61 +535,90 @@ async fn save_notification(
         return Ok((StatusCode::UNAUTHORIZED, "unauthorized").into_response());
     };
 
-    let Ok(email) = form.email.parse::<lettre::Address>().map(|a| a.to_string()) else {
-        return Ok((StatusCode::BAD_REQUEST, "invalid email").into_response());
+    let email = match form.email {
+        Some(val) => {
+            let Ok(addr) = val.parse::<lettre::Address>() else {
+                return Ok((StatusCode::BAD_REQUEST, "invalid email").into_response());
+            };
+            Some(addr.to_string())
+        }
+        None => None,
     };
 
-    let subscription_state = match app
-        .repo
-        .get_notification_subscription(user_id)
-        .await
-        .context("retrieving notification subscription")?
-        .map(|s| s.payload)
-    {
-        Some(NotificationSubscriptionPayload::Pending {
-            email,
-            verification_token,
-        }) => {
-            app.notifier
-                .send_verification_email(user_id, &email, locale, &verification_token)
-                .await
-                .context("resending verification email")?;
-            "pending"
-        }
-        Some(NotificationSubscriptionPayload::Active { .. }) => {
-            // do nothing
-            "active"
-        }
-        Some(NotificationSubscriptionPayload::Disabled) | None => {
-            let verification_token = notify::generate_verification_token();
+    let notification_subscription_state: views::NotificationSubscriptionState =
+        if form.disable.map(|v| v == "1").unwrap_or(false) {
             app.repo
                 .save_notification_subscription(&NotificationSubscription {
                     person_id: user_id,
-                    payload: NotificationSubscriptionPayload::Pending {
-                        email: email.clone(),
-                        verification_token: verification_token.clone(),
-                    },
+                    payload: NotificationSubscriptionPayload::Disabled,
                 })
                 .await
                 .context("saving notification subscription")?;
-            app.notifier
-                .send_verification_email(user_id, &email, locale, &verification_token)
+            views::NotificationSubscriptionState::Disabled
+        } else {
+            match app
+                .repo
+                .get_notification_subscription(user_id)
                 .await
-                .context("sending verification email")?;
-            "pending"
-        }
-    };
+                .context("retrieving notification subscription")?
+                .map(|s| s.payload)
+            {
+                Some(NotificationSubscriptionPayload::Pending {
+                    email,
+                    verification_token,
+                }) => {
+                    app.notifier
+                        .send_verification_email(user_id, &email, locale, &verification_token)
+                        .await
+                        .context("resending verification email")?;
+                    views::NotificationSubscriptionState::Pending
+                }
+                Some(NotificationSubscriptionPayload::Active { .. }) => {
+                    // do nothing
+                    views::NotificationSubscriptionState::Active
+                }
+                Some(NotificationSubscriptionPayload::Disabled) | None => {
+                    let Some(email) = email else {
+                        return Ok((StatusCode::BAD_REQUEST, "email is required").into_response());
+                    };
+
+                    let verification_token = notify::generate_verification_token();
+                    app.repo
+                        .save_notification_subscription(&NotificationSubscription {
+                            person_id: user_id,
+                            payload: NotificationSubscriptionPayload::Pending {
+                                email: email.clone(),
+                                verification_token: verification_token.clone(),
+                            },
+                        })
+                        .await
+                        .context("saving notification subscription")?;
+                    app.notifier
+                        .send_verification_email(user_id, &email, locale, &verification_token)
+                        .await
+                        .context("sending verification email")?;
+                    views::NotificationSubscriptionState::Pending
+                }
+            }
+        };
 
     if is_htmx(&headers) {
+        let user = app
+            .repo
+            .get_person(user_id)
+            .await
+            .context("getting current user")?
+            .context("current user does not exist")?;
+
         Ok((
             [(
                 HX_TRIGGER,
                 serde_json::to_string(
-                    &json!({"notification-subscription-state-changed": {"state": subscription_state}}),
+                    &json!({"notification-subscription-state-changed": {"state": notification_subscription_state}}),
                 )
                 .expect("error marshalling notification-subscription-state-changed event data"),
             )],
-            StatusCode::OK,
+            oob_logged_in_info(locale, Some(&user), notification_subscription_state).await?,
         )
             .into_response())
     } else {

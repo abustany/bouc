@@ -31,6 +31,9 @@ comment is to add context that can NOT be inferred from the code.
 
 NO unchecked casts: use the From/Into/TryInto trait methods.
 
+When writing e2e tests: use the testing-library module to match elements by
+name. If impossible, you may revert to a data-testid attribute.
+
 ## Quality checks
 
 tests pass, clippy doesn't complain, code is formatted using `cargo fmt`.

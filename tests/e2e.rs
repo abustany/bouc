@@ -477,6 +477,12 @@ async fn notifications(session: &Session) -> Result<()> {
     open_login_modal(client, profile).await?;
     log_in(client, "Alice").await?;
     book(client, &booking_day(10)?, &booking_day(12)?, profile).await?;
+    assert_profile_notification_state(
+        client,
+        s.profile_notifications_status_none,
+        s.profile_notifications_enable,
+    )
+    .await?;
 
     let subscribe = within(client, &notifications_hint(client).await?)
         .find_by_role(
@@ -494,6 +500,12 @@ async fn notifications(session: &Session) -> Result<()> {
     submit(client, Modal::Email).await?;
     wait_for_modal_to_close(client, Modal::Email).await?;
     wait_for_notifications_hint(client, s.index_hint_booking_notifications_pending).await?;
+    assert_profile_notification_state(
+        client,
+        s.profile_notifications_status_pending,
+        s.profile_notifications_resend_verification,
+    )
+    .await?;
 
     session
         .goto(&wait_for_link(session, "verify").await?)
@@ -501,6 +513,12 @@ async fn notifications(session: &Session) -> Result<()> {
     session.goto(&session.index_url()).await?;
     book(client, &booking_day(20)?, &booking_day(21)?, profile).await?;
     wait_for_notifications_hint(client, s.index_hint_booking_notifications_active).await?;
+    assert_profile_notification_state(
+        client,
+        s.profile_notifications_status_active,
+        s.profile_notifications_disable,
+    )
+    .await?;
 
     // only a booking made by somebody else sends a notification, and only a
     // notification carries the unsubscribe link
@@ -516,6 +534,12 @@ async fn notifications(session: &Session) -> Result<()> {
     log_out(client, s.profile_login, profile).await?;
     open_login_modal(client, profile).await?;
     log_in(client, "Alice").await?;
+    assert_profile_notification_state(
+        client,
+        s.profile_notifications_status_disabled,
+        s.profile_notifications_enable,
+    )
+    .await?;
     book(client, &booking_day(25)?, &booking_day(26)?, profile).await?;
     wait_for_notifications_hint(client, "").await
 }
@@ -531,6 +555,24 @@ async fn notifications_hint(client: &Client) -> Result<Element> {
 async fn wait_for_notifications_hint(client: &Client, text: &str) -> Result<()> {
     let hint = notifications_hint(client).await?;
     wait_for_visible_text(client, &hint, text).await
+}
+
+async fn assert_profile_notification_state(
+    client: &Client,
+    status: &str,
+    action: &str,
+) -> Result<()> {
+    let profile_menu = screen(client)
+        .find_by_role("button", Some(NameMatch::Exact("Profile menu")))
+        .await?;
+    User::new(client).click(&profile_menu).await?;
+    let profile_dialog = screen(client).find_by_role("dialog", None).await?;
+    wait_for_visible_text(client, &profile_dialog, status).await?;
+    within(client, &profile_dialog)
+        .find_by_role("button", Some(NameMatch::Exact(action)))
+        .await?;
+    User::new(client).click(&profile_menu).await?;
+    screen(client).wait_for_role_count("dialog", None, 0).await
 }
 
 /// The notification emails go out from a task spawned while the booking is
@@ -591,6 +633,10 @@ async fn log_in(client: &Client, name: &str) -> Result<()> {
 
 async fn log_out(client: &Client, login_label: &str, profile: BrowserProfile) -> Result<()> {
     profile.dismiss_popovers(client).await?;
+    let profile_menu = screen(client)
+        .find_by_role("button", Some(NameMatch::Exact("Profile menu")))
+        .await?;
+    User::new(client).click(&profile_menu).await?;
     let disconnect = screen(client)
         .find_by_role(
             "button",
