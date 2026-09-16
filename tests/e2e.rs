@@ -290,8 +290,11 @@ async fn scenario(client: &Client, addr: SocketAddr, profile: BrowserProfile) ->
 
     booking_with_a_session(client, profile).await?;
 
-    // the creator gets the edit and delete buttons
+    // the creator gets the edit and delete buttons, and no way to book again
     let popover = open_popover(client, &start, profile).await?;
+    within(client, &popover)
+        .wait_for_role_count("button", Some(NameMatch::Exact(s.start_booking)), 0)
+        .await?;
     let edit = within(client, &popover)
         .find_by_role(
             "button",

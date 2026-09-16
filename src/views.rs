@@ -420,6 +420,14 @@ fn day_popover(
     let open_condition = format!("shouldShowPopoverForDay('{yyyymmdd}')");
     let display_day = s.format_date_month_day(day);
     let title_id = format!("day-popover-title-{yyyymmdd}");
+    let creator_ids = bookings
+        .iter()
+        .map(|b| u32::from(b.creator_id).to_string())
+        .collect::<Vec<_>>();
+    let no_booking_of_mine = format!(
+        "!{}.includes(userId)",
+        serde_json::to_string(&creator_ids).expect("error serializing creator ids")
+    );
 
     html! {
         // the vertical padding is the visual gap to the day cell, kept inside the
@@ -507,7 +515,9 @@ fn day_popover(
                                 guest_count: b.guest_count,
                             };
 
-                            li {
+                            @let is_mine = format!("userId === '{}'", u32::from(b.creator_id));
+
+                            li ":class"={"(" (is_mine) ") ? 'order-first font-semibold' : ''"} {
                                 (s.format_date_month_day(b.start_date))
                                 " → "
                                 (s.format_date_month_day(b.end_date))
@@ -515,30 +525,30 @@ fn day_popover(
                                 (creator_name)
                                 " ("
                                 (s.guests(b.guest_count))
-                                ") "
-                                button
-                                  title=(s.day_popover_edit_button_title)
-                                  aria-label=(s.day_popover_edit_button_title)
-                                  x-cloak
-                                  x-show={"userId === '" (u32::from(b.creator_id)) "'"}
-                                  x-on:click={"editBooking(" (serde_json::to_string(&js_booking).expect("error serializing booking")) ")"}
-                                  .cursor-pointer
-                                {
-                                    "✏️"
-                                }
-                                " "
-                                button
-                                  title=(s.day_popover_delete_button_title)
-                                  aria-label=(s.day_popover_delete_button_title)
-                                  x-cloak
-                                  x-show={"userId === '" (u32::from(b.creator_id)) "'"}
-                                  hx-confirm=(s.day_popover_confirm_delete_message)
-                                  hx-delete={"/bookings/" (u32::from(b.id))}
-                                  hx-swap="none" // server will OOB-swap the calendars
-                                  x-on:click="justBooked = false"
-                                  .cursor-pointer
-                                {
-                                    "🗑️"
+                                ")"
+
+                                div x-cloak x-show=(is_mine) .flex .gap-2 ."pt-1" .font-normal {
+                                    button
+                                      x-on:click={"editBooking(" (serde_json::to_string(&js_booking).expect("error serializing booking")) ")"}
+                                      .btn-secondary
+                                      type="button"
+                                    {
+                                        span aria-hidden="true" { "✏️" }
+                                        " "
+                                        (s.day_popover_edit_button_title)
+                                    }
+                                    button
+                                      hx-confirm=(s.day_popover_confirm_delete_message)
+                                      hx-delete={"/bookings/" (u32::from(b.id))}
+                                      hx-swap="none" // server will OOB-swap the calendars
+                                      x-on:click="justBooked = false"
+                                      .btn-secondary
+                                      type="button"
+                                    {
+                                        span aria-hidden="true" { "🗑️" }
+                                        " "
+                                        (s.day_popover_delete_button_title)
+                                    }
                                 }
                             }
                         }
@@ -546,9 +556,11 @@ fn day_popover(
                 }
 
                 button
+                  x-show=(no_booking_of_mine)
                   x-on:click={"startBooking('" (yyyymmdd) "')"}
                   .justify-self-center
                   .btn-primary
+                  type="button"
                 {
                     (s.start_booking)
                 }

@@ -60,6 +60,10 @@
   .btn-primary {
     @apply rounded-full px-3 py-1.5 transition-colors bg-green-500 hover:bg-green-400 active:scale-95;
   }
+
+  .btn-secondary {
+    @apply rounded-full px-2 py-0.5 transition-colors border border-border bg-transparent hover:bg-border active:scale-95 cursor-pointer;
+  }
 }
 
 @layer utilities {
