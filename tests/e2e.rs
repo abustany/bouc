@@ -305,6 +305,14 @@ async fn scenario(client: &Client, addr: SocketAddr, profile: BrowserProfile) ->
         )
         .await?;
     user.click(&edit).await?;
+    assert!(
+        !modal_open(client, Modal::Booking).await?,
+        "the booking modal was shown before the days were picked again"
+    );
+
+    // editing starts over from the days: the stay is shortened to start..middle
+    wait_for_animations(client, &popover).await?;
+    repick_days(client, &start, &middle, profile).await?;
     let booking_modal = find_modal(client, Modal::Booking).await?;
     assert!(
         !modal_open(client, Modal::Login).await?,
@@ -323,9 +331,10 @@ async fn scenario(client: &Client, addr: SocketAddr, profile: BrowserProfile) ->
     submit(client, Modal::Booking).await?;
     wait_for_modal_to_close(client, Modal::Booking).await?;
 
-    for day in days {
+    for day in [start.as_str(), middle.as_str()] {
         wait_for_day_name_contains(client, day, s.day_at_capacity, true).await?;
     }
+    wait_for_day_name_contains(client, &end, s.day_popover_empty, true).await?;
 
     let entry = single_popover_entry(client, &start, profile).await?;
     assert!(
@@ -671,6 +680,19 @@ async fn pick_days(client: &Client, start: &str, end: &str, profile: BrowserProf
         )
         .await?;
     User::new(client).click(&book).await?;
+    profile.select_end_day(client, end).await
+}
+
+/// Picking the days of a booking being edited starts on the calendar itself,
+/// without the popover's "Book" button.
+async fn repick_days(
+    client: &Client,
+    start: &str,
+    end: &str,
+    profile: BrowserProfile,
+) -> Result<()> {
+    let button = find_day_button(client, start).await?;
+    User::new(client).click(&button).await?;
     profile.select_end_day(client, end).await
 }
 

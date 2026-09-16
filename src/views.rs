@@ -168,6 +168,9 @@ pub fn index(opts: IndexOpts) -> Markup {
                     span x-show="hintToShow === 'pick-day'" {
                         (pointer_touch_switch(s.index_hint, s.index_hint_touch))
                     }
+                    span x-cloak x-show="hintToShow === 'pick-start-day'" {
+                        (pointer_touch_switch(s.index_hint_start_day, s.index_hint_start_day_touch))
+                    }
                     span x-cloak x-show="hintToShow === 'pick-end-day'" {
                         (pointer_touch_switch(s.index_hint_end_day, s.index_hint_end_day_touch))
                     }

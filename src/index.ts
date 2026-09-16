@@ -141,6 +141,10 @@ interface CalendarComponentData {
         hidePopoverTimeout: ReturnType<typeof setTimeout> | null;
       }
     | {
+        kind: "pickingStartDay"; // user clicked "Edit", re-picks the days
+        booking: Omit<PendingBooking, "startDay" | "endDay">;
+      }
+    | {
         kind: "pickingDays"; // user clicked "Book", picks days
         booking: PendingBooking;
       }
@@ -154,7 +158,7 @@ interface CalendarComponentData {
   onBookingSaved(): void;
   instantPopover: boolean;
   justBooked: boolean;
-  hintToShow: "pick-day" | "pick-end-day" | "booking-complete" | null;
+  hintToShow: "pick-day" | "pick-start-day" | "pick-end-day" | "booking-complete" | null;
   shouldShowPopoverForDay(day: string): boolean;
   popoverClasses(day: string): string;
   placePopover(day: string): void;
@@ -221,6 +225,11 @@ const CalendarComponent: () => AlpineComponent<CalendarComponentData> = () => ({
   onDayClick(day: string) {
     if (this.state.kind === "init") {
       this.openPopover(day);
+    } else if (this.state.kind === "pickingStartDay") {
+      this.state = {
+        kind: "pickingDays",
+        booking: { ...this.state.booking, startDay: day, endDay: day },
+      };
     } else if (this.state.kind === "pickingDays") {
       this.state = {
         kind: "completingBooking",
@@ -241,6 +250,7 @@ const CalendarComponent: () => AlpineComponent<CalendarComponentData> = () => ({
   get hintToShow() {
     if (this.justBooked) return "booking-complete";
     if (this.state.kind === "init") return "pick-day";
+    if (this.state.kind === "pickingStartDay") return "pick-start-day";
     if (this.state.kind === "pickingDays") return "pick-end-day";
     return null;
   },
@@ -325,7 +335,11 @@ const CalendarComponent: () => AlpineComponent<CalendarComponentData> = () => ({
 
   editBooking(b: PendingBooking) {
     this.justBooked = false;
-    asAppChild(this).currentBooking = b;
+    this.closePopover();
+    this.state = {
+      kind: "pickingStartDay",
+      booking: { id: b.id, guestCount: b.guestCount },
+    };
   },
 
   get booking() {
