@@ -792,6 +792,7 @@ pub fn logged_in_info(opts: &LoggedInInfoOpts) -> Markup {
 
                         div
                           role="dialog"
+                          aria-label="Profile menu"
                           x-cloak
                           x-show="showProfileDropdown"
                           "x-on:click.outside"="showProfileDropdown = false"

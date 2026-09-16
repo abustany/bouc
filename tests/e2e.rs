@@ -36,6 +36,9 @@ use bouc::strings::{Locale, Strings};
 use bouc::{StartOptions, email, start};
 
 const LOGGED_IN_INFO: &str = "#logged-in-info";
+/// The dropdown shares its dialog role with the day popovers, so both the
+/// button and the dropdown are matched by this name.
+const PROFILE_MENU: &str = "Profile menu";
 
 /// Server-side `max_capacity`, reaching it turns the day cell red.
 const MAX_CAPACITY: u32 = 6;
@@ -575,16 +578,20 @@ async fn assert_profile_notification_state(
     action: &str,
 ) -> Result<()> {
     let profile_menu = screen(client)
-        .find_by_role("button", Some(NameMatch::Exact("Profile menu")))
+        .find_by_role("button", Some(NameMatch::Exact(PROFILE_MENU)))
         .await?;
     User::new(client).click(&profile_menu).await?;
-    let profile_dialog = screen(client).find_by_role("dialog", None).await?;
+    let profile_dialog = screen(client)
+        .find_by_role("dialog", Some(NameMatch::Exact(PROFILE_MENU)))
+        .await?;
     wait_for_visible_text(client, &profile_dialog, status).await?;
     within(client, &profile_dialog)
         .find_by_role("button", Some(NameMatch::Exact(action)))
         .await?;
     User::new(client).click(&profile_menu).await?;
-    screen(client).wait_for_role_count("dialog", None, 0).await
+    screen(client)
+        .wait_for_role_count("dialog", Some(NameMatch::Exact(PROFILE_MENU)), 0)
+        .await
 }
 
 /// The notification emails go out from a task spawned while the booking is
@@ -650,7 +657,7 @@ async fn log_in_as(client: &Client, name: &str, expected_name: &str) -> Result<(
 async fn log_out(client: &Client, login_label: &str, profile: BrowserProfile) -> Result<()> {
     profile.dismiss_popovers(client).await?;
     let profile_menu = screen(client)
-        .find_by_role("button", Some(NameMatch::Exact("Profile menu")))
+        .find_by_role("button", Some(NameMatch::Exact(PROFILE_MENU)))
         .await?;
     User::new(client).click(&profile_menu).await?;
     let disconnect = screen(client)
