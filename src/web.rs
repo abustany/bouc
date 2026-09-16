@@ -269,6 +269,7 @@ fn is_htmx(headers: &HeaderMap) -> bool {
 }
 
 const USER_ID_COOKIE_NAME: &str = "bouc-user-id";
+const USER_ID_COOKIE_MAX_AGE: time::Duration = time::Duration::days(365);
 
 #[derive(Deserialize)]
 struct LoginForm {
@@ -290,6 +291,7 @@ async fn login(
     let user_id_str = u32::from(user.id).to_string();
     let user_id_cookie = Cookie::build((USER_ID_COOKIE_NAME, user_id_str.clone()))
         .http_only(true)
+        .max_age(USER_ID_COOKIE_MAX_AGE)
         .build();
     let updated_jar = jar.add(user_id_cookie);
     let notification_subscription_state =
