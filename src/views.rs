@@ -459,6 +459,7 @@ fn day_popover(
               ."sheet:px-4"
               ."sheet:pt-4"
               ."sheet:pb-[calc(1rem+env(safe-area-inset-bottom))]"
+              ."sheet:shadow-sheet"
               ."sheet:rounded-b-none"
               ."sheet:rounded-t-2xl"
               ."sheet:border-x-0"

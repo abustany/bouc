@@ -6,6 +6,9 @@
 
   --breakpoint-md: 400px;
   --breakpoint-lg: 700px;
+
+  /* shadow-lg, mirrored to point up out of the sheet */
+  --shadow-sheet: 0 -10px 15px -3px rgb(0 0 0 / 0.1), 0 -4px 6px -4px rgb(0 0 0 / 0.1);
 }
 
 /* Phones, where the day popover becomes a sheet coming from the bottom of the
